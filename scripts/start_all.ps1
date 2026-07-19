@@ -89,8 +89,19 @@ function Test-PythonCandidate {
     [string[]]$Arguments
   )
   if (-not (Test-Command $FilePath)) { return $false }
-  & $FilePath @Arguments -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" > $null 2>&1
-  return ($LASTEXITCODE -eq 0)
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    & $FilePath @Arguments -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" > $null 2>&1
+    return ($LASTEXITCODE -eq 0)
+  }
+  catch {
+    return $false
+  }
+  finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
 }
 
 function Get-CompatiblePython {
@@ -227,23 +238,50 @@ function Ensure-RuntimeDependencies {
   }
 }
 
+function Invoke-NativeCapture {
+  param(
+    [string]$FilePath,
+    [string[]]$Arguments
+  )
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $output = & $FilePath @Arguments 2>&1
+    return [PSCustomObject]@{
+      ExitCode = $LASTEXITCODE
+      Text = ($output | Out-String)
+    }
+  }
+  catch {
+    return [PSCustomObject]@{
+      ExitCode = 1
+      Text = ($_ | Out-String)
+    }
+  }
+  finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+}
+
 function Ensure-BackendProjectDependencies {
   Write-Step '第 2 步：检查后端环境依赖（项目里的 Python 包）。'
   Push-Location $RootDir
   try {
-    $output = & poetry install --no-root --dry-run --no-ansi 2>&1
-    $dryRunText = ($output | Out-String)
-    if ($LASTEXITCODE -ne 0) {
-      Write-Host $dryRunText
+    $dryRun = Invoke-NativeCapture -FilePath 'poetry' -Arguments @('install', '--no-root', '--dry-run', '--no-ansi')
+    if ($dryRun.ExitCode -ne 0) {
+      Write-Host $dryRun.Text
       throw '[start_all] 后端环境依赖检查失败。请保持这个窗口打开，将报错截图发给帮你的人。'
     }
-    $ready = $dryRunText -like '*Package operations: 0 installs, 0 updates, 0 removals*'
+    $ready = $dryRun.Text -like '*Package operations: 0 installs, 0 updates, 0 removals*'
     if ($ready) {
       Write-Step '检查结果：本地后端环境依赖已齐全，本次没有安装新依赖。'
       return
     }
-    & poetry install --no-root --no-ansi
-    if ($LASTEXITCODE -ne 0) {
+
+    $install = Invoke-NativeCapture -FilePath 'poetry' -Arguments @('install', '--no-root', '--no-ansi')
+    if ($install.ExitCode -ne 0) {
+      Write-Host $install.Text
       throw '[start_all] 后端环境依赖安装失败。请保持这个窗口打开，将报错截图发给帮你的人。'
     }
     Write-Step '检查结果：本地后端环境依赖已自动补齐。'
@@ -258,13 +296,12 @@ function Ensure-FrontendProjectDependencies {
   $webDir = Join-Path $RootDir 'web'
   Push-Location $webDir
   try {
-    $output = & pnpm install --reporter append-only 2>&1
-    $installText = ($output | Out-String)
-    if ($LASTEXITCODE -ne 0) {
-      Write-Host $installText
+    $install = Invoke-NativeCapture -FilePath 'pnpm' -Arguments @('install', '--reporter', 'append-only')
+    if ($install.ExitCode -ne 0) {
+      Write-Host $install.Text
       throw '[start_all] 网页环境依赖检查失败。请保持这个窗口打开，将报错截图发给帮你的人。'
     }
-    if ($installText -like '*Already up to date*' -or $installText -like '*Lockfile is up to date*') {
+    if ($install.Text -like '*Already up to date*' -or $install.Text -like '*Lockfile is up to date*') {
       Write-Step '检查结果：本地网页环境依赖已齐全，本次没有安装新依赖。'
     }
     else {
@@ -276,14 +313,47 @@ function Ensure-FrontendProjectDependencies {
   }
 }
 
+function Stop-ProcessTree {
+  param([System.Diagnostics.Process]$Process)
+  if (-not $Process) { return }
+  try {
+    if (-not $Process.HasExited) {
+      taskkill /PID $Process.Id /T /F > $null 2>&1
+    }
+  }
+  catch {
+    Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Stop-ProcessOnPort {
+  param([int]$Port)
+  if (-not $Port) { return }
+  $connections = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -ne 0 }
+  foreach ($connection in $connections) {
+    $ownerId = $connection.OwningProcess
+    $owner = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerId" -ErrorAction SilentlyContinue
+    if (-not $owner) { continue }
+    $commandLine = [string]$owner.CommandLine
+    if ($commandLine.Contains($RootDir) -or $commandLine.Contains('app.main:app') -or $commandLine.Contains('vite')) {
+      taskkill /PID $ownerId /T /F > $null 2>&1
+    }
+  }
+}
+
 function Stop-Services {
   $running = @($script:BackendProcess, $script:FrontendProcess) | Where-Object { $_ -and -not $_.HasExited }
-  if (-not $running -or $running.Count -eq 0) { return }
+  $backendPortInUse = $BackendPort -and (Get-NetTCPConnection -LocalPort $BackendPort -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -ne 0 })
+  $frontendPortInUse = $FrontendPort -and (Get-NetTCPConnection -LocalPort $FrontendPort -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -ne 0 })
+  if ((-not $running -or $running.Count -eq 0) -and -not $backendPortInUse -and -not $frontendPortInUse) { return }
+
   Write-Host ''
   Write-Step '正在停止服务...'
   foreach ($process in $running) {
-    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    Stop-ProcessTree -Process $process
   }
+  Stop-ProcessOnPort -Port $FrontendPort
+  Stop-ProcessOnPort -Port $BackendPort
 }
 
 function Start-Services {
@@ -312,8 +382,8 @@ function Start-Services {
   $script:BackendProcess = Start-Process -FilePath 'poetry' -ArgumentList $backendArgs -WorkingDirectory $RootDir -NoNewWindow -PassThru
 
   Write-Step "启动前端 http://127.0.0.1:$FrontendPort"
-  $frontendArgs = @('dev', '--host', '0.0.0.0', '--port', [string]$FrontendPort, '--strictPort')
-  $script:FrontendProcess = Start-Process -FilePath 'pnpm' -ArgumentList $frontendArgs -WorkingDirectory (Join-Path $RootDir 'web') -NoNewWindow -PassThru
+  $frontendCommand = "pnpm dev --host 0.0.0.0 --port $FrontendPort --strictPort"
+  $script:FrontendProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/d', '/s', '/c', $frontendCommand) -WorkingDirectory (Join-Path $RootDir 'web') -NoNewWindow -PassThru
 }
 
 function Test-ServicesReady {
