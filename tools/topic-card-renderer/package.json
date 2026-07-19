@@ -1,0 +1,12 @@
+{
+  "name": "topic-card-renderer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "render": "node render.mjs"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "satori": "0.18.4"
+  }
+}
