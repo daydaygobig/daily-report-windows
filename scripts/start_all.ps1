@@ -137,21 +137,66 @@ function Ensure-Python {
   throw '[start_all] Python 自动安装失败。请安装 Python 3.11 或更高版本后重新启动。'
 }
 
+function Refresh-EnvironmentPath {
+  $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+  $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+  $env:PATH = @($machinePath, $userPath, $env:PATH) -join ';'
+  Add-CommonToolPaths
+}
+
+function Get-NodeVersion {
+  if (-not (Test-Command 'node')) { return $null }
+  $result = Invoke-NativeCapture -FilePath 'node' -Arguments @('-p', 'process.versions.node')
+  if ($result.ExitCode -ne 0) { return $null }
+  return $result.Text.Trim()
+}
+
 function Test-NodeCompatible {
-  if (-not (Test-Command 'node')) { return $false }
-  node -e "process.exit(Number(process.versions.node.split('.')[0]) >= 18 ? 0 : 1)" > $null 2>&1
-  return ($LASTEXITCODE -eq 0)
+  $version = Get-NodeVersion
+  if (-not $version) { return $false }
+  $majorText = ($version -split '\.')[0]
+  $major = 0
+  if (-not [int]::TryParse($majorText, [ref]$major)) { return $false }
+  return ($major -ge 18)
+}
+
+function Install-OrUpgradeNode {
+  param([string]$Reason)
+  Ensure-Winget
+  $script:InstalledRuntimeTool = $true
+  Write-Step $Reason
+
+  $upgrade = Invoke-NativeCapture -FilePath 'winget' -Arguments @('upgrade', '-e', '--id', 'OpenJS.NodeJS.LTS', '--accept-package-agreements', '--accept-source-agreements')
+  if ($upgrade.ExitCode -ne 0) {
+    $install = Invoke-NativeCapture -FilePath 'winget' -Arguments @('install', '-e', '--id', 'OpenJS.NodeJS.LTS', '--accept-package-agreements', '--accept-source-agreements')
+    if ($install.ExitCode -ne 0) {
+      Write-Host $upgrade.Text
+      Write-Host $install.Text
+      throw '[start_all] Node.js 自动安装或升级失败。请安装 Node.js 18 或更高版本后重新启动。'
+    }
+  }
+
+  Refresh-EnvironmentPath
 }
 
 function Ensure-Node {
+  Refresh-EnvironmentPath
+  $version = Get-NodeVersion
   if (Test-NodeCompatible) { return }
 
-  Write-Step '未检测到 Node.js 18 或更高版本，尝试通过 winget 自动安装。'
-  Ensure-Winget
-  $script:InstalledRuntimeTool = $true
-  winget install -e --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+  if ($version) {
+    Install-OrUpgradeNode -Reason "检测到 Node.js $version，低于 18，尝试通过 winget 自动升级到 LTS。"
+  }
+  else {
+    Install-OrUpgradeNode -Reason '未检测到 Node.js 18 或更高版本，尝试通过 winget 自动安装 LTS。'
+  }
+
   if (-not (Test-NodeCompatible)) {
-    throw '[start_all] Node.js 自动安装失败。请安装 Node.js 18 或更高版本后重新启动。'
+    $current = Get-NodeVersion
+    if ($current) {
+      throw "[start_all] Node.js 已尝试安装或升级，但当前窗口仍检测到版本 $current。请关闭这个窗口，重新双击启动脚本；如果仍失败，请安装 Node.js 18 或更高版本。"
+    }
+    throw '[start_all] Node.js 已尝试安装或升级，但当前窗口仍检测不到 node。请关闭这个窗口，重新双击启动脚本；如果仍失败，请安装 Node.js 18 或更高版本。'
   }
 }
 
@@ -200,27 +245,37 @@ function Ensure-Poetry {
   }
 }
 
+function Test-PnpmUsable {
+  if (-not (Test-Command 'pnpm')) { return $false }
+  $result = Invoke-NativeCapture -FilePath 'pnpm' -Arguments @('--version')
+  return ($result.ExitCode -eq 0)
+}
+
 function Ensure-Pnpm {
   Ensure-Node
-  Add-CommonToolPaths
-  if (Test-Command 'pnpm') { return }
+  Refresh-EnvironmentPath
+  if (Test-PnpmUsable) { return }
 
-  Write-Step '未检测到 pnpm，现在自动安装。'
+  Write-Step '未检测到可用的 pnpm，现在自动安装或修复。'
   $script:InstalledRuntimeTool = $true
   if (Test-Command 'corepack') {
-    corepack enable > $null 2>&1
-    corepack prepare pnpm@latest --activate > $null 2>&1
+    $corepackEnable = Invoke-NativeCapture -FilePath 'corepack' -Arguments @('enable')
+    $corepackPrepare = Invoke-NativeCapture -FilePath 'corepack' -Arguments @('prepare', 'pnpm@latest', '--activate')
   }
-  Add-CommonToolPaths
-  if (-not (Test-Command 'pnpm')) {
+  Refresh-EnvironmentPath
+  if (-not (Test-PnpmUsable)) {
     if (-not (Test-Command 'npm')) {
       throw '[start_all] 未检测到 npm，无法自动安装 pnpm。请安装 Node.js LTS 后重新启动。'
     }
-    npm install -g pnpm
-    Add-CommonToolPaths
+    $install = Invoke-NativeCapture -FilePath 'npm' -Arguments @('install', '-g', 'pnpm')
+    if ($install.ExitCode -ne 0) {
+      Write-Host $install.Text
+      throw '[start_all] pnpm 自动安装失败。请安装 pnpm 后重新启动。'
+    }
+    Refresh-EnvironmentPath
   }
-  if (-not (Test-Command 'pnpm')) {
-    throw '[start_all] pnpm 自动安装失败。请安装 pnpm 后重新启动。'
+  if (-not (Test-PnpmUsable)) {
+    throw '[start_all] pnpm 自动安装后仍不可用。请关闭这个窗口，重新双击启动脚本；如果仍失败，请安装 pnpm 后重试。'
   }
 }
 
