@@ -8,11 +8,6 @@
     "build": "vite build",
     "preview": "vite preview"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
-  },
   "dependencies": {
     "@ant-design/icons": "^5.2.6",
     "@hello-pangea/dnd": "^18.0.1",

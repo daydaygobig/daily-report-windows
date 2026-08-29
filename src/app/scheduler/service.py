@@ -808,12 +808,15 @@ class SchedulerService:
                         if push_webhook_ids:
                             webhooks = webhook_repo.get_by_ids(db, push_webhook_ids)
                             logger.info("准备推送飞书 job_id={} job_name={}", job.id, job.name)
+                            feishu_content = summary
+                            if html_required:
+                                feishu_content = self._build_html_report_push_content(task, job, execution)
                             await self._retry_async(
                                 lambda: self._push_feishu(
                                     webhooks=webhooks,
                                     task=task,
                                     job=job,
-                                    summary=summary,
+                                    summary=feishu_content,
                                     raise_on_failure=True,
                                 ),
                                 retries=max_retry,
@@ -1489,6 +1492,26 @@ class SchedulerService:
         title = apply_template(getattr(webhook, "card_header_title", None), default_title)
         subtitle = apply_template(getattr(webhook, "card_header_subtitle", None), "")
         return title, subtitle, template
+
+    def _build_html_report_push_content(self, task: Task, job: Job, execution: Execution) -> str:
+        generated_at = datetime.now(tz=self._tz).strftime("%Y-%m-%d %H:%M")
+        lines = [
+            "✅ **日报已生成**",
+            "",
+            f"**任务**：{task.name}",
+            f"**作业**：{job.name}",
+            f"**生成时间**：{generated_at}",
+        ]
+        deploy_url = (getattr(execution, "deploy_url", None) or "").strip()
+        if deploy_url:
+            # 归档路径含中文目录，飞书卡片链接需要 URL 编码才能点击
+            encoded_url = quote(deploy_url, safe=":/?&=%#")
+            lines += ["", f"📖 [点击在线阅读日报]({encoded_url})"]
+        else:
+            backup_path = getattr(execution, "html_backup_path", None)
+            if backup_path:
+                lines += ["", f"HTML 备份已保存至：{backup_path}"]
+        return "\n".join(lines)
 
     async def _push_feishu(self, webhooks, task: Task, job: Optional[Job], summary: str, *, raise_on_failure: bool = False) -> bool:
         if not webhooks:

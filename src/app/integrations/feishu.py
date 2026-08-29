@@ -74,11 +74,23 @@ async def send_markdown(
             try:
                 response = await client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
+                _ensure_webhook_accepted(response)
                 return
             except Exception:
                 if attempt >= max_retries:
                     raise
                 await asyncio.sleep(retry_interval)
+
+
+def _ensure_webhook_accepted(response: httpx.Response) -> None:
+    """飞书 webhook 失败时仍返回 HTTP 200，必须检查响应体里的业务码。"""
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError(f"飞书 webhook 返回了非 JSON 响应：{response.text[:200]}")
+    code = data.get("code")
+    if code not in (None, 0):
+        raise RuntimeError(f"飞书 webhook 拒绝消息（code={code}）：{data.get('msg')}")
 
 
 async def broadcast_markdown(
@@ -168,11 +180,23 @@ async def send_image(
             try:
                 response = await client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
+                _ensure_webhook_accepted(response)
                 return
             except Exception:
                 if attempt >= max_retries:
                     raise
                 await asyncio.sleep(retry_interval)
+
+
+def _ensure_webhook_accepted(response: httpx.Response) -> None:
+    """飞书 webhook 失败时仍返回 HTTP 200，必须检查响应体里的业务码。"""
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError(f"飞书 webhook 返回了非 JSON 响应：{response.text[:200]}")
+    code = data.get("code")
+    if code not in (None, 0):
+        raise RuntimeError(f"飞书 webhook 拒绝消息（code={code}）：{data.get('msg')}")
 
 
 def build_test_png() -> bytes:
