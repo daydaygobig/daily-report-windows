@@ -85,6 +85,8 @@ export type Job = {
   topic_image_enabled: boolean;
   topic_image_layout: "single" | "collection" | "auto";
   topic_image_merge_threshold: number;
+  topic_image_backup_enabled: boolean;
+  topic_image_backup_path?: string;
 };
 
 export type TopicTypeKey = "industry_business" | "work_methods" | "career_growth" | "mind_wellbeing";
@@ -213,6 +215,8 @@ export type JobPayload = {
   topic_image_enabled: boolean;
   topic_image_layout: "single" | "collection" | "auto";
   topic_image_merge_threshold: number;
+  topic_image_backup_enabled: boolean;
+  topic_image_backup_path?: string;
 };
 
 export type JobUpdatePayload = Partial<JobPayload>;

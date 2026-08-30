@@ -81,6 +81,8 @@ class Job(BaseModel):
     topic_image_enabled = Column(Boolean, default=False, nullable=False)
     topic_image_layout = Column(String(20), nullable=False, default="single")
     topic_image_merge_threshold = Column(Integer, nullable=False, default=3)
+    topic_image_backup_enabled = Column(Boolean, default=False, nullable=False)
+    topic_image_backup_path = Column(Text, nullable=True)
 
     task = relationship("Task", back_populates="jobs")
     executions = relationship("Execution", back_populates="job", cascade="all, delete-orphan")

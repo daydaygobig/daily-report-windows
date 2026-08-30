@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -59,8 +60,20 @@ def parse_topic_cards(raw: str, *, style_config: Any = None) -> list[dict[str, A
     if not isinstance(cards, list):
         raise ValueError("模型返回 JSON 缺少 cards 数组")
     resolved_style_config = normalize_topic_style_config(style_config)
-    normalized = [_normalize_card(card, index, style_config=resolved_style_config) for index, card in enumerate(cards)]
+    normalized = [_normalize_any_card(card, index, style_config=resolved_style_config) for index, card in enumerate(cards)]
     return normalized
+
+
+def _normalize_any_card(card: Any, index: int, *, style_config: dict[str, dict[str, str]]) -> dict[str, Any]:
+    if not isinstance(card, dict):
+        raise ValueError(f"第 {index + 1} 张卡片不是对象")
+    fmt = str(card.get("card_format") or "").strip().lower()
+    if fmt == "case":
+        return _normalize_case_card(card, index, style_config=style_config)
+    if not fmt and "summary" not in card and ("background" in card or "relationship" in card):
+        # 模型漏写 card_format 时按字段特征兜底识别案例格式
+        return _normalize_case_card(card, index, style_config=style_config)
+    return _normalize_card(card, index, style_config=style_config)
 
 
 def normalize_topic_style_config(value: Any = None) -> dict[str, dict[str, str]]:
@@ -232,9 +245,6 @@ def _normalize_card(card: Any, index: int, *, style_config: dict[str, dict[str, 
     tags = _normalize_tags(card.get("tags"))
     topic_type = _resolve_topic_type(card, tags)
     style = style_config.get(topic_type) or DEFAULT_TOPIC_STYLE_CONFIG[topic_type]
-    normalized_participants = [_clip(name, 24) for name in participants]
-    if len(normalized_participants) > 16:
-        normalized_participants = normalized_participants[:15] + ["等"]
     return {
         "id": str(card.get("id") or f"card-{index + 1:02d}"),
         "topic_type": topic_type,
@@ -248,12 +258,140 @@ def _normalize_card(card: Any, index: int, *, style_config: dict[str, dict[str, 
         "trigger_quote": _clip(card.get("trigger_quote"), 160),
         "summary": _clip(card.get("summary"), 260),
         "points": [_clip(point, 120) for point in points[:5]],
-        "participants": normalized_participants,
+        "participants": _normalize_participants(participants),
         "highlight_quote": _clip(card.get("highlight_quote"), 180),
         "highlight_speaker": _clip(card.get("highlight_speaker"), 32),
         "section1_title": "抛出探讨",
         "highlight_label": "高光时刻",
     }
+
+
+def _normalize_case_card(card: Any, index: int, *, style_config: dict[str, dict[str, str]]) -> dict[str, Any]:
+    """案例卡片（六槽位：一句话问题/背景概述/人物关系/分析过程/解决方案/金句）。"""
+    required = (
+        "title",
+        "trigger_quote",
+        "background",
+        "relationship",
+        "analysis",
+        "solution",
+        "highlight_quote",
+        "highlight_speaker",
+    )
+    missing = [field for field in required if field not in card]
+    if missing:
+        raise ValueError(f"第 {index + 1} 张案例卡片缺少字段：{', '.join(missing)}")
+    analysis = card.get("analysis")
+    participants = card.get("participants") or []
+    if not isinstance(analysis, list) or not all(isinstance(item, str) for item in analysis):
+        raise ValueError(f"第 {index + 1} 张案例卡片 analysis 必须是字符串数组")
+    if not isinstance(participants, list) or not all(isinstance(item, str) for item in participants):
+        raise ValueError(f"第 {index + 1} 张案例卡片 participants 必须是字符串数组")
+    tags = _normalize_tags(card.get("tags"))
+    topic_type = _resolve_topic_type(card, tags)
+    style = style_config.get(topic_type) or DEFAULT_TOPIC_STYLE_CONFIG[topic_type]
+    # 人物姓名/昵称统一脱敏：只保留第一个字符，其余用「某」代替（含网名 ID），
+    # 覆盖当事人、参与者、金句署名在正文中的所有出现位置
+    raw_initiator = _clip(card.get("initiator"), 32)
+    known_names = [raw_initiator, *_normalize_participants(participants), _clip(card.get("highlight_speaker"), 32)]
+    masks = _build_name_masks(known_names)
+
+    def _masked(value: Any, limit: int) -> str:
+        return _clip(_apply_name_masks(value, masks), limit)
+
+    initiator = dict(masks).get(raw_initiator, raw_initiator)
+    background = _masked(card.get("background"), 220)
+    relationship = _masked(card.get("relationship"), 140)
+    analysis_points = [_masked(point, 120) for point in analysis[:4]]
+    solution = _masked(card.get("solution"), 160)
+    # summary/points 由槽位拼出，保证旧渲染引擎与旧展示路径仍可用
+    summary = background if not relationship else f"{background}\n人物关系：{relationship}"
+    points = analysis_points + [solution]
+    return {
+        "id": str(card.get("id") or f"card-{index + 1:02d}"),
+        "card_format": "case",
+        "topic_type": topic_type,
+        "style_key": style["style_key"],
+        "theme": style["theme"],
+        "tags": tags,
+        "time_range": _clip(card.get("time_range"), 32),
+        "title": _clip(card.get("title"), 60),
+        "initiator": initiator,
+        "initiator_label": _clip(card.get("initiator_label") or "当事人", 16),
+        "trigger_quote": _masked(card.get("trigger_quote"), 160),
+        "summary": summary,
+        "background": background,
+        "relationship": relationship,
+        "analysis": analysis_points,
+        "solution": solution,
+        "points": points,
+        "participants": [_masked(name, 24) for name in _normalize_participants(participants)],
+        "highlight_quote": _masked(card.get("highlight_quote"), 180),
+        "highlight_speaker": _masked(card.get("highlight_speaker"), 32),
+        "section1_title": "抛出探讨",
+        "highlight_label": "金句",
+    }
+
+
+def _normalize_participants(participants: list[str]) -> list[str]:
+    normalized = [_clip(name, 24) for name in participants]
+    if len(normalized) > 16:
+        normalized = normalized[:15] + ["等"]
+    return normalized
+
+
+COMPOUND_SURNAMES = (
+    "欧阳", "太史", "端木", "上官", "司马", "东方", "独孤", "南宫", "万俟", "闻人",
+    "夏侯", "诸葛", "尉迟", "公羊", "赫连", "澹台", "皇甫", "宗政", "濮阳", "公冶",
+    "太叔", "申屠", "公孙", "慕容", "仲孙", "钟离", "长孙", "鲜于", "宇文", "司徒",
+    "司空", "令狐", "西门", "南门", "百里", "东郭", "呼延",
+)
+
+
+def _mask_person_name(name: str) -> str:
+    """姓名/昵称脱敏：只保留第一个字符，其余用「某」代替。
+
+    苏云→苏某，欧阳晨→欧阳某；网名 ID 一并处理：Cici_→C某，阿南plus→阿某。
+    """
+    text = str(name or "").strip().lstrip("@").strip()
+    if not text or len(text) <= 1:
+        return text
+    for surname in COMPOUND_SURNAMES:
+        if text.startswith(surname) and len(text) > len(surname):
+            return f"{surname}某"
+    return f"{text[0]}某"
+
+
+# 群友A、网友1 这类泛称本身已匿名，保留原样以便区分多个来源
+_GENERIC_NAME_PATTERN = re.compile(r"^(?:群友|网友)[0-9A-Za-z]{0,3}$")
+
+
+def _maybe_mask_name(name: str) -> str:
+    text = str(name or "").strip().lstrip("@").strip()
+    if _GENERIC_NAME_PATTERN.fullmatch(text):
+        return text
+    return _mask_person_name(text)
+
+
+def _build_name_masks(names: Iterable[str]) -> list[tuple[str, str]]:
+    """构建 姓名/昵称→脱敏名 映射，按名字长度降序替换，避免短名先替换破坏长名匹配。"""
+    masks: dict[str, str] = {}
+    for name in names:
+        text = str(name or "").strip().lstrip("@").strip()
+        if not text or text in masks:
+            continue
+        masked = _maybe_mask_name(text)
+        if masked != text:
+            masks[text] = masked
+    return sorted(masks.items(), key=lambda item: len(item[0]), reverse=True)
+
+
+def _apply_name_masks(text: Any, masks: list[tuple[str, str]]) -> str:
+    """把文本中出现过的人物名字替换为脱敏形式（含 @ 提及）。"""
+    body = str(text or "")
+    for raw, masked in masks:
+        body = body.replace(f"@{raw}", f"@{masked}").replace(raw, masked)
+    return body
 
 
 def _clip(value: Any, limit: int) -> str:
@@ -331,6 +469,8 @@ def _join_cards_markdown(cards: list[dict[str, Any]]) -> str:
 
 
 def _card_markdown(card: dict[str, Any]) -> str:
+    if card.get("card_format") == "case":
+        return _case_card_markdown(card)
     points = "\n".join(f"{index + 1}、{_with_at(point)}" for index, point in enumerate(card["points"]))
     participants = " ".join(_name_at(name) for name in card["participants"])
     speaker = _name_at(card["highlight_speaker"])
@@ -357,6 +497,35 @@ def _card_markdown(card: dict[str, Any]) -> str:
             participants or "无",
             "",
             "**7、高光时刻：**",
+            f"> {card['highlight_quote']}",
+            f"> —— {speaker}",
+        ]
+    )
+
+
+def _case_card_markdown(card: dict[str, Any]) -> str:
+    analysis = "\n".join(f"{index + 1}、{_with_at(point)}" for index, point in enumerate(card["analysis"]))
+    speaker = _name_at(card["highlight_speaker"])
+    return "\n".join(
+        [
+            f"### {_theme_dot(card['theme'])} {card['title']}",
+            "",
+            "**1、当事人：**",
+            _name_at(card["initiator"]),
+            "",
+            "**2、背景概述：**",
+            card["background"],
+            "",
+            "**3、人物关系：**",
+            card["relationship"],
+            "",
+            "**4、分析过程：**",
+            analysis or "无",
+            "",
+            "**5、解决方案：**",
+            card["solution"],
+            "",
+            "**6、金句：**",
             f"> {card['highlight_quote']}",
             f"> —— {speaker}",
         ]

@@ -88,6 +88,8 @@ type JobFormValues = {
   topic_image_enabled: boolean;
   topic_image_layout: "single" | "collection" | "auto";
   topic_image_merge_threshold: number;
+  topic_image_backup_enabled: boolean;
+  topic_image_backup_path?: string;
   ima_sync_enabled: boolean;
   ima_use_default_account: boolean;
   ima_account_id?: number;
@@ -349,6 +351,8 @@ const defaultFormValues: JobFormValues = {
   topic_image_enabled: false,
   topic_image_layout: "single",
   topic_image_merge_threshold: 3,
+  topic_image_backup_enabled: false,
+  topic_image_backup_path: "",
   ima_sync_enabled: false,
   ima_use_default_account: true,
   ima_account_id: undefined,
@@ -511,6 +515,8 @@ const toJobFormValues = (job: Job): JobFormValues => {
     topic_image_enabled: job.topic_image_enabled ?? false,
     topic_image_layout: job.topic_image_layout ?? "single",
     topic_image_merge_threshold: job.topic_image_merge_threshold ?? 3,
+    topic_image_backup_enabled: job.topic_image_backup_enabled ?? false,
+    topic_image_backup_path: job.topic_image_backup_path ?? "",
     ima_sync_enabled: job.ima_sync_enabled ?? false,
     ima_use_default_account: job.ima_use_default_account ?? true,
     ima_account_id: job.ima_account_id ?? undefined,
@@ -553,6 +559,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
   const chatlogBackupEnabled = Form.useWatch("chatlog_backup_enabled", form);
   const modelOutputBackupEnabled = Form.useWatch("model_output_backup_enabled", form);
   const topicImageEnabled = Form.useWatch("topic_image_enabled", form);
+  const topicImageBackupEnabled = Form.useWatch("topic_image_backup_enabled", form);
   const topicTextLayout = Form.useWatch("topic_text_layout", form);
   const topicImageLayout = Form.useWatch("topic_image_layout", form);
   const imaSyncEnabled = Form.useWatch("ima_sync_enabled", form);
@@ -983,6 +990,11 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
       topic_image_layout: isTopicCardTask && values.topic_image_enabled ? values.topic_image_layout ?? "single" : "single",
       topic_image_merge_threshold:
         isTopicCardTask && values.topic_image_enabled ? values.topic_image_merge_threshold ?? 3 : 3,
+      topic_image_backup_enabled: isTopicCardTask && values.topic_image_enabled ? values.topic_image_backup_enabled : false,
+      topic_image_backup_path:
+        isTopicCardTask && values.topic_image_enabled && values.topic_image_backup_enabled
+          ? values.topic_image_backup_path?.trim() || undefined
+          : undefined,
       ima_sync_enabled: imaSyncActive,
       ima_use_default_account: imaSyncActive ? values.ima_use_default_account : true,
       ima_account_id: imaSyncActive && !values.ima_use_default_account ? values.ima_account_id ?? null : null,
@@ -1183,6 +1195,24 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
                 rules={[{ required: true, message: "请输入图片自动合集阈值" }]}
               >
                 <InputNumber min={1} max={20} style={{ width: "100%" }} />
+              </Form.Item>
+            ) : null}
+            <Form.Item
+              name="topic_image_backup_enabled"
+              label="本地保存"
+              valuePropName="checked"
+              tooltip="开启后每次推送时，会把卡片 PNG 图片和对应 Markdown 文本自动保存到本地文件夹（按日期分目录）。"
+            >
+              <Switch />
+            </Form.Item>
+            {topicImageBackupEnabled ? (
+              <Form.Item
+                name="topic_image_backup_path"
+                label="保存路径"
+                tooltip="相对路径将基于本地备份目录（默认 backups/topic_cards），路径会被保存方便下次使用。"
+                extra="示例：topic_cards/案例图 或 D:/自媒体/职场案例卡片"
+              >
+                <Input placeholder="留空则保存到 backups/topic_cards/日期/" />
               </Form.Item>
             ) : null}
           </>

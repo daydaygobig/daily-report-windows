@@ -145,11 +145,15 @@ async function preloadEmojiAssets(cards) {
       card.initiator_label,
       card.initiator,
       card.summary,
+      card.background,
+      card.relationship,
+      card.solution,
       card.highlight_label,
       card.highlight_quote,
       card.highlight_speaker,
       ...(card.tags || []),
       ...(card.points || []),
+      ...(card.analysis || []),
       ...(card.participants || [])
     ].forEach((value) => collectEmojis(value, codepoints));
   }
@@ -222,11 +226,15 @@ function satoriGraphemeImages(cards) {
       card.initiator_label,
       card.initiator,
       card.summary,
+      card.background,
+      card.relationship,
+      card.solution,
       card.highlight_label,
       card.highlight_quote,
       card.highlight_speaker,
       ...(card.tags || []),
       ...(card.points || []),
+      ...(card.analysis || []),
       ...(card.participants || [])
     ].forEach((value) => collectEmojiValues(value, values));
   }
@@ -614,7 +622,153 @@ const h = (type, props, ...children) => {
 };
 
 function satoriHeight(card) {
-  return measure(card).height;
+  return isCaseCard(card) ? measureCase(card).height : measure(card).height;
+}
+
+function isCaseCard(card) {
+  return String(card?.card_format || "").toLowerCase() === "case";
+}
+
+function cardTreeFor(card) {
+  return isCaseCard(card) ? caseCardTree(card) : topicCardTree(card);
+}
+
+// === 案例卡片（六槽位：背景概述/人物关系/分析过程/解决方案/金句） ===
+
+function measureCase(card) {
+  const titleLines = wrapText(card.title, 22, 352, 3);
+  const backgroundLines = wrapText(card.background, 15, 352, 10);
+  const relationshipLines = wrapText(card.relationship, 15, 352, 6);
+  const analysisLines = (card.analysis || []).map((point) => wrapText(point, 15, 320, 4));
+  const solutionLines = wrapText(card.solution, 15, 316, 6);
+  const highlightLines = wrapText(card.highlight_quote, 17, 304, 5);
+  const sectionHeight = 34; // 章节标题行 22 + marginBottom 12
+  const bodyLine = 23; // fontSize 15 * lineHeight 1.5
+  const height =
+    6 + // 顶部色条
+    20 + titleLines.length * 27 + 12 + 22 + 20 + // 头部（标题+标签行，不展示日期）
+    20 + // 正文上内边距
+    sectionHeight + backgroundLines.length * bodyLine + 24 + // 01 背景概述
+    sectionHeight + relationshipLines.length * bodyLine + 24 + // 02 人物关系
+    sectionHeight +
+    analysisLines.reduce((sum, lines) => sum + Math.max(22, lines.length * 21) + 12, 0) +
+    24 + // 03 分析过程
+    sectionHeight + solutionLines.length * bodyLine + 24 + // 04 解决方案
+    20 + 20 + 12 + highlightLines.length * 25 + 12 + 21 + 20 + // 金句盒（上下内边距+标签+引文+署名）
+    20; // 正文下内边距
+  return {
+    height: Math.ceil(height),
+    titleLines,
+    backgroundLines,
+    relationshipLines,
+    analysisLines,
+    solutionLines,
+    highlightLines
+  };
+}
+
+function caseCardTree(card) {
+  const style = styleOf(card);
+  const height = measureCase(card).height;
+  const tags = cardTags(card);
+  const paragraph = (text) =>
+    h("div", { style: { fontSize: 15, color: palette.body, lineHeight: 1.5 } }, text);
+  const sectionBlock = (index, title, content) =>
+    h("div", { style: { marginBottom: 24 } }, sectionHeaderTree(style, index, title), content);
+  return h(
+    "div",
+    {
+      style: {
+        width: cardWidth,
+        minHeight: height,
+        flexShrink: 0,
+        background: style.cardFill,
+        overflow: "hidden",
+        position: "relative",
+        borderRadius: style.radius,
+        border: `1px solid ${style.cardStroke}`,
+        boxShadow: "0 10px 25px rgba(0,0,0,0.05)",
+        fontFamily: "SimHei",
+        color: palette.ink,
+        letterSpacing: 0
+      }
+    },
+    h("div", { style: { height: 6, background: style.topFill, width: "100%", flexShrink: 0 } }),
+    h(
+      "div",
+      { style: { padding: "20px 24px", background: style.headerFill, borderBottom: "1px solid rgba(0,0,0,0.04)" } },
+      h("div", { style: { fontSize: 22, fontWeight: 900, lineHeight: 1.22, color: "#111827", marginBottom: 12 } }, card.title),
+      h(
+        "div",
+        { style: { flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap", maxWidth: 352 } },
+        ...tags.map((tag) =>
+          h(
+            "div",
+            {
+              style: {
+                background: style.theme.light,
+                color: style.theme.dark,
+                padding: "2px 8px",
+                borderRadius: 4,
+                fontSize: 13,
+                fontWeight: 800
+              }
+            },
+            tag
+          )
+        )
+      )
+    ),
+    h(
+      "div",
+      { style: { padding: "20px 24px", background: style.bodyFill } },
+      sectionBlock("01", "背景概述", paragraph(card.background)),
+      sectionBlock("02", "人物关系", paragraph(card.relationship)),
+      sectionBlock(
+        "03",
+        "分析过程",
+        h(
+          "div",
+          { style: { gap: 12 } },
+          ...(card.analysis || []).map((point, index) =>
+            h(
+              "div",
+              { style: { flexDirection: "row", alignItems: "flex-start", gap: 8 } },
+              h("div", { style: { color: style.theme.main, fontSize: 15, fontWeight: 900, marginTop: 1 } }, String(index + 1)),
+              h("div", { style: { color: palette.ink, fontSize: 15, lineHeight: 1.45, flex: 1 } }, point)
+            )
+          )
+        )
+      ),
+      sectionBlock(
+        "04",
+        "解决方案",
+        h(
+          "div",
+          {
+            style: {
+              background: style.textBoxFill,
+              border: `1px solid ${style.textBoxStroke}`,
+              padding: 14,
+              borderRadius: 8,
+              fontSize: 15,
+              color: palette.ink,
+              fontWeight: 600,
+              lineHeight: 1.5
+            }
+          },
+          card.solution
+        )
+      ),
+      h(
+        "div",
+        { style: { background: style.highlightFill, border: `1px solid ${style.highlightStroke}`, padding: 20, borderRadius: 8 } },
+        h("div", { style: { fontSize: 13, fontWeight: 900, color: style.theme.dark, marginBottom: 12 } }, card.highlight_label || "金句"),
+        h("div", { style: { fontSize: 17, fontWeight: 800, color: "#111827", lineHeight: 1.45, marginBottom: 12 } }, `“${card.highlight_quote}”`),
+        h("div", { style: { fontSize: 13, fontWeight: 800, color: style.theme.dark, textAlign: "right" } }, `— ${card.highlight_speaker}`)
+      )
+    )
+  );
 }
 
 function sectionHeaderTree(style, index, title) {
@@ -869,7 +1023,7 @@ async function renderSatoriImages(cards, output, layout) {
           color: palette.ink
         }
       },
-      ...cards.map((card) => topicCardTree(card))
+      ...cards.map((card) => cardTreeFor(card))
     );
     const file = path.join(output, "topic-cards-collection.png");
     const meta = await writeSatoriPng(tree, width, height, file, scale, graphemeImages);
@@ -879,7 +1033,7 @@ async function renderSatoriImages(cards, output, layout) {
   for (const [index, card] of cards.entries()) {
     const height = satoriHeight(card);
     const file = path.join(output, `${card.id || `card-${index + 1}`}.png`);
-    const meta = await writeSatoriPng(topicCardTree(card), cardWidth, height, file, scale, graphemeImages);
+    const meta = await writeSatoriPng(cardTreeFor(card), cardWidth, height, file, scale, graphemeImages);
     images.push({ path: file, width: meta.width, height: meta.height, size_bytes: meta.size, render_scale: meta.scale, engine: "satori", layout });
   }
   return images;

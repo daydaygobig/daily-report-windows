@@ -352,6 +352,8 @@ def _apply_job_feature_settings(obj_in: dict, *, is_update: bool) -> dict:
     ensure_default("topic_image_enabled", False)
     ensure_default("topic_image_layout", "single")
     ensure_default("topic_image_merge_threshold", 3)
+    ensure_default("topic_image_backup_enabled", False)
+    ensure_default("topic_image_backup_path", None)
     ensure_default("disk_alert_enabled", False)
     ensure_default("disk_alert_threshold_bytes", 100 * 1024 * 1024)
 

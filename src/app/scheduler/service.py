@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -1723,6 +1724,18 @@ class SchedulerService:
                             }
                         )
                     meta["deliveries"].append(delivery)
+                if rendered_by_engine:
+                    try:
+                        backups = self._backup_topic_card_files(job=job, cards=cards, rendered=rendered_by_engine)
+                        if backups:
+                            meta["local_backups"] = backups
+                            logger.info(
+                                "话题卡片本地备份完成 job={} files={}",
+                                job.id,
+                                [item["path"] for item in backups],
+                            )
+                    except Exception:
+                        logger.exception("话题卡片本地备份失败 job={}", job.id)
             finally:
                 for images in rendered_by_engine.values():
                     topic_card_service.cleanup_images(images)
@@ -2312,6 +2325,70 @@ class SchedulerService:
                 }
             )
         return artifacts
+
+    def _backup_topic_card_files(
+        self,
+        *,
+        job: Job,
+        cards: List[Dict[str, Any]],
+        rendered: Dict[str, List[topic_card_service.RenderedImage]],
+    ) -> List[Dict[str, str]]:
+        """话题/案例卡片本地备份：图片 PNG + 对应 markdown，按日期分文件夹。
+
+        目录复用 _resolve_output_dir：未配置时落在 backups/topic_cards/ 下。
+        """
+        if not getattr(job, "topic_image_backup_enabled", False):
+            return []
+        images: List[topic_card_service.RenderedImage] = []
+        seen: set[str] = set()
+        for items in rendered.values():
+            for image in items:
+                key = str(image.path)
+                if key not in seen:
+                    seen.add(key)
+                    images.append(image)
+        if not images:
+            return []
+        date_str = datetime.now(tz=self._tz).strftime("%Y-%m-%d")
+        directory = (
+            self._resolve_output_dir(getattr(job, "topic_image_backup_path", None), Path("topic_cards")) / date_str
+        )
+        artifacts: List[Dict[str, str]] = []
+        per_card = len(images) == len(cards)
+        for index, image in enumerate(images):
+            card = cards[index] if per_card else None
+            base_name = self._topic_card_backup_basename(date_str, index, card)
+            target = self._ensure_unique_path(directory / f"{base_name}{image.path.suffix or '.png'}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(image.path, target)
+            artifacts.append({"type": "topic_card_image", "label": "卡片图片本地备份", "path": str(target)})
+            markdown = self._topic_card_markdown_for(cards, card, per_card)
+            if markdown:
+                md_path = self._ensure_unique_path(directory / f"{base_name}.md")
+                normalized = markdown if markdown.endswith("\n") else f"{markdown}\n"
+                md_path.write_text(normalized, encoding="utf-8")
+                artifacts.append({"type": "topic_card_markdown", "label": "卡片文本本地备份", "path": str(md_path)})
+        return artifacts
+
+    @staticmethod
+    def _topic_card_backup_basename(date_str: str, index: int, card: Optional[Dict[str, Any]]) -> str:
+        if not card:
+            return f"{date_str}_合集_{index + 1:02d}"
+        title = re.sub(r'[\\/:*?"<>|\r\n\t]', "", str(card.get("title") or "")).strip()
+        title = title[:40].strip() or "卡片"
+        return f"{date_str}_{index + 1:02d}_{title}"
+
+    @staticmethod
+    def _topic_card_markdown_for(
+        cards: List[Dict[str, Any]],
+        card: Optional[Dict[str, Any]],
+        per_card: bool,
+    ) -> str:
+        if per_card and card is not None:
+            messages = topic_card_service.build_text_messages([card], layout="per_topic", threshold=1)
+        else:
+            messages = topic_card_service.build_text_messages(cards, layout="merged", threshold=1)
+        return "\n\n---\n\n".join(messages)
 
     def _store_html_report(
         self,

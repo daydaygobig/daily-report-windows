@@ -91,6 +91,8 @@ def ensure_schema(engine: Engine) -> None:
     _ensure_column(engine, "jobs", "topic_image_enabled", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(engine, "jobs", "topic_image_layout", "TEXT NOT NULL DEFAULT 'single'")
     _ensure_column(engine, "jobs", "topic_image_merge_threshold", "INTEGER NOT NULL DEFAULT 3")
+    _ensure_column(engine, "jobs", "topic_image_backup_enabled", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(engine, "jobs", "topic_image_backup_path", "TEXT")
     _ensure_column(engine, "jobs", "disk_alert_enabled", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(engine, "jobs", "disk_alert_threshold_bytes", "INTEGER NOT NULL DEFAULT 104857600")
     _ensure_column(engine, "executions", "exported_files", "TEXT")

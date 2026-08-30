@@ -80,6 +80,8 @@ class JobBase(BaseModel):
     topic_image_enabled: bool = False
     topic_image_layout: TopicImageLayout = "single"
     topic_image_merge_threshold: int = Field(default=3, ge=1, le=20)
+    topic_image_backup_enabled: bool = False
+    topic_image_backup_path: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_job(cls, values: "JobBase"):
@@ -206,6 +208,8 @@ class JobUpdate(BaseModel):
     topic_image_enabled: Optional[bool] = None
     topic_image_layout: Optional[TopicImageLayout] = None
     topic_image_merge_threshold: Optional[int] = Field(default=None, ge=1, le=20)
+    topic_image_backup_enabled: Optional[bool] = None
+    topic_image_backup_path: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_job(cls, values: "JobUpdate"):
@@ -309,6 +313,8 @@ class JobOut(ORMBase):
     topic_image_enabled: bool
     topic_image_layout: str
     topic_image_merge_threshold: int
+    topic_image_backup_enabled: bool
+    topic_image_backup_path: Optional[str]
 
 
 class JobReorderPayload(BaseModel):

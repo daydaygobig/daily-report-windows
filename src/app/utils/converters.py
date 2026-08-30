@@ -145,6 +145,8 @@ def job_to_dict(job: Job) -> Dict[str, Any]:
         "topic_image_enabled": bool(getattr(job, "topic_image_enabled", False)),
         "topic_image_layout": getattr(job, "topic_image_layout", "single") or "single",
         "topic_image_merge_threshold": getattr(job, "topic_image_merge_threshold", 3) or 3,
+        "topic_image_backup_enabled": bool(getattr(job, "topic_image_backup_enabled", False)),
+        "topic_image_backup_path": getattr(job, "topic_image_backup_path", None),
     }
 
 
