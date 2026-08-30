@@ -365,10 +365,17 @@ def _mask_person_name(name: str) -> str:
 # 群友A、网友1 这类泛称本身已匿名，保留原样以便区分多个来源
 _GENERIC_NAME_PATTERN = re.compile(r"^(?:群友|网友)[0-9A-Za-z]{0,3}$")
 
+# 提示词「匿名化规则」分发的固定化名属于已匿名名称，脱敏时必须原样保留，
+# 否则张三→张某会把模型已完成的化名替换再打码一遍
+_ANONYMOUS_ALIAS_NAMES = frozenset({
+    "张三", "李四", "王二麻子", "赵五", "钱六", "孙七", "周八", "吴九",
+    "郑十", "刘十一", "陈十二", "杨十三", "黄十四", "徐十五", "胡十六", "朱十七",
+})
+
 
 def _maybe_mask_name(name: str) -> str:
     text = str(name or "").strip().lstrip("@").strip()
-    if _GENERIC_NAME_PATTERN.fullmatch(text):
+    if _GENERIC_NAME_PATTERN.fullmatch(text) or text in _ANONYMOUS_ALIAS_NAMES:
         return text
     return _mask_person_name(text)
 
