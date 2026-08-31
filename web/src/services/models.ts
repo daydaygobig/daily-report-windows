@@ -17,6 +17,7 @@ export type Model = {
   top_p?: number | null;
   extra?: Record<string, unknown> | null;
   request_standard: string;
+  model_type: "text" | "image";
   created_at: string;
   updated_at: string;
 };
@@ -31,6 +32,7 @@ export type ModelCreatePayload = {
   top_p?: number | null;
   extra?: Record<string, unknown> | null;
   request_standard?: string;
+  model_type?: "text" | "image";
 };
 
 export type ModelUpdatePayload = Partial<Omit<ModelCreatePayload, "api_key">> & {
@@ -49,6 +51,12 @@ export type ModelTestPayload = {
   timeout?: number;
   prompt?: string;
   request_standard?: string;
+  model_type?: "text" | "image";
+};
+
+export type ModelTestResult = {
+  ok: boolean;
+  preview?: string;
 };
 
 export type RemoteModelsPayload = {
@@ -81,6 +89,7 @@ export async function fetchRemoteModels(payload: RemoteModelsPayload): Promise<s
   return response.data.data.models ?? [];
 }
 
-export async function testModelConnection(payload: ModelTestPayload): Promise<void> {
-  await axios.post<ApiResponse<{ ok: boolean }>>(`/api/models/test-connection`, payload);
+export async function testModelConnection(payload: ModelTestPayload): Promise<ModelTestResult> {
+  const response = await axios.post<ApiResponse<ModelTestResult>>(`/api/models/test-connection`, payload);
+  return response.data.data;
 }

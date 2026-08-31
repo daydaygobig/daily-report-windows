@@ -1,5 +1,5 @@
 import { useMemo, type ReactNode } from "react";
-import { Button, Collapse, Descriptions, Modal, Space, Tag, Timeline, Tooltip, Typography } from "antd";
+import { Button, Collapse, Descriptions, Modal, Space, Table, Tag, Timeline, Tooltip, Typography } from "antd";
 import type { Execution } from "../services/executions";
 import { formatDateTime } from "../utils/datetime";
 
@@ -442,6 +442,80 @@ const ExecutionDetailModal = ({
     );
   }, [data]);
 
+  const imageCardDetail = useMemo(() => {
+    const meta = data?.image_card_meta;
+    if (!meta) {
+      return null;
+    }
+    const images = meta.图片列表 ?? [];
+    const rows = images.map((image, index) => ({ ...image, key: `image-card-${image.序号 ?? index + 1}` }));
+    return (
+      <div>
+        <Text strong style={{ display: "block", marginBottom: 8 }}>
+          图片结果
+        </Text>
+        <Table
+          size="small"
+          pagination={false}
+          dataSource={rows}
+          scroll={{ x: 940 }}
+          locale={{ emptyText: "暂无图片结果" }}
+          columns={[
+              {
+                title: "图片",
+                dataIndex: "序号",
+                width: 72,
+                render: (value, _record, index) => `#${value ?? index + 1}`
+              },
+              { title: "图片模型", key: "image-model", width: 140, render: () => meta.图片模型 ?? "-" },
+              { title: "分辨率", key: "resolution", width: 90, render: () => meta.分辨率档位 ?? "-" },
+              { title: "图片比例", key: "aspect-ratio", width: 90, render: () => meta.请求比例 ?? "-" },
+              { title: "请求尺寸", dataIndex: "请求尺寸", width: 130, render: (value) => value || "-" },
+              {
+                title: "实际尺寸",
+                dataIndex: "实际尺寸",
+                width: 130,
+                render: (value) => (!value || value === "历史记录未采集" ? "—" : value)
+              },
+              { title: "图片大小", dataIndex: "文件大小", width: 110, render: (value) => value || "-" },
+              {
+                title: "生成状态",
+                dataIndex: "生成状态",
+                width: 100,
+                render: (value, record) => (
+                  <Tooltip title={record.错误信息 || undefined}>
+                    <Tag color={value === "成功" ? "green" : "red"}>{value || "-"}</Tag>
+                  </Tooltip>
+                )
+              },
+              {
+                title: "推送状态",
+                key: "push-status",
+                render: (_, record) => {
+                  const pushes = record.推送记录 ?? [];
+                  if (!pushes.length) {
+                    return "—";
+                  }
+                  return (
+                    <Space direction="vertical" size={2}>
+                      {pushes.map((push, pushIndex) => (
+                        <Space key={`${push.推送渠道 ?? "Webhook"}-${pushIndex}`} size={4}>
+                          <Text>{push.推送渠道 ?? "Webhook"}</Text>
+                          <Tooltip title={push.错误信息 || undefined}>
+                            <Tag color={push.状态 === "成功" ? "green" : "red"}>{push.状态 ?? "-"}</Tag>
+                          </Tooltip>
+                        </Space>
+                      ))}
+                    </Space>
+                  );
+                }
+              }
+          ]}
+        />
+      </div>
+    );
+  }, [data]);
+
   const promptCollapseItems = useMemo(() => {
     if (!data) {
       return [];
@@ -529,7 +603,7 @@ const ExecutionDetailModal = ({
   return (
     <Modal
       open={open}
-      width={900}
+      width={imageCardDetail ? 1120 : 900}
       centered
       onCancel={onClose}
       onOk={onClose}
@@ -539,7 +613,8 @@ const ExecutionDetailModal = ({
       title={data ? `执行记录 #${data.id}` : "执行详情"}
     >
       {data ? (
-        <Descriptions bordered column={2} size="small">
+        <>
+          <Descriptions bordered column={2} size="small">
           <Descriptions.Item label="任务">
             <div style={{ display: "flex", flexDirection: "column" }}>
               <Text>{`任务名称：${data.task_name ?? "-"}`}</Text>
@@ -662,7 +737,9 @@ const ExecutionDetailModal = ({
               <Paragraph style={{ whiteSpace: "pre-wrap" }}>{data.error_msg}</Paragraph>
             </Descriptions.Item>
           ) : null}
-        </Descriptions>
+          </Descriptions>
+          {imageCardDetail ? <div style={{ marginTop: 16, maxWidth: "100%", overflow: "hidden" }}>{imageCardDetail}</div> : null}
+        </>
       ) : (
         <div>暂无数据</div>
       )}

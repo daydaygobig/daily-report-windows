@@ -46,6 +46,34 @@ export type TopicCardMeta = {
   }[];
 };
 
+export type ImageCardMeta = {
+  图片模型?: string;
+  内容块数量?: number;
+  请求比例?: string;
+  分辨率档位?: string;
+  请求尺寸?: string;
+  请求参数?: Record<string, string | number>;
+  生成状态?: string;
+  生成成功数?: number;
+  推送状态?: string;
+  推送成功数?: number;
+  推送总数?: number;
+  图片列表?: {
+    序号?: number;
+    生成状态?: string;
+    请求尺寸?: string;
+    实际尺寸?: string;
+    文件大小?: string;
+    错误信息?: string | null;
+    推送记录?: {
+      推送渠道?: string;
+      状态?: string;
+      图片标识?: string | null;
+      错误信息?: string | null;
+    }[];
+  }[];
+};
+
 export type Execution = {
   id: number;
   job_id: number | null;
@@ -133,6 +161,7 @@ export type Execution = {
     job_alert_error?: string | null;
   } | null;
   topic_card_meta?: TopicCardMeta | null;
+  image_card_meta?: ImageCardMeta | null;
 };
 
 export type ExecutionQuery = {

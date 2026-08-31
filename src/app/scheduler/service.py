@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 from ..config import get_settings
 from ..db import session_scope
-from ..integrations import feishu, github, llm
+from ..integrations import feishu, github, image_generation, llm
 from ..integrations.security import decrypt_value
 from ..models.disk_monitor import DiskInspectionJob, DiskIoRecord
 from ..models.execution import Execution
@@ -34,7 +34,7 @@ from ..repositories.job_repo import JobRepository
 from ..repositories.webhook_repo import WebhookRepository
 from ..services import alert_service, chat_record_service, disk_monitor_service
 from ..services.github_view_url import build_view_url
-from ..services import topic_card_service
+from ..services import image_card_service, topic_card_service
 from ..schemas.webhook import CARD_COLOR_OPTIONS
 from ..utils.interval_schedule import build_daily_interval_plans as build_shared_interval_plans
 from ..utils.interval_schedule import compute_next_interval_plan as compute_shared_interval_plan
@@ -596,6 +596,7 @@ class SchedulerService:
                         system_instruction_for_usage: Optional[str] = None
                         system_instruction_text = self._build_system_instruction(
                             task,
+                            job,
                             talker_names,
                             time_window,
                             message_stats_result,
@@ -661,6 +662,32 @@ class SchedulerService:
                             summary_snapshot = summary
                             execution.summary_md = summary
                             execution.summary_path = None
+                            execution.html_backup_path = None
+                            execution.deploy_status = "none"
+                            execution.deploy_url = None
+                            execution.deploy_error = None
+                            execution.github_config_id = None
+                            message_stats_github_artifact = await self._sync_message_stats_to_github(
+                                db=db,
+                                task=task,
+                                job=job,
+                                execution=execution,
+                                time_window=time_window,
+                                stats=message_stats_result,
+                            )
+                            if message_stats_github_artifact:
+                                exported_files.append(message_stats_github_artifact)
+                            if attempt > 1:
+                                logger.info("Job %s 在第 %s 次重试后成功", job.id, attempt)
+                            break
+                        if getattr(task, "task_type", "report") == "image_card":
+                            await self._handle_image_card_result(
+                                db=db,
+                                task=task,
+                                job=job,
+                                execution=execution,
+                                raw_response=summary_snapshot or "",
+                            )
                             execution.html_backup_path = None
                             execution.deploy_status = "none"
                             execution.deploy_url = None
@@ -1414,12 +1441,20 @@ class SchedulerService:
             style_config = topic_card_service.normalize_topic_style_config(getattr(task, "topic_style_config", None))
             topic_card_service.parse_topic_cards(summary, style_config=style_config)
             return
+        if getattr(task, "task_type", "report") == "image_card":
+            image_card_service.parse_content_blocks(
+                summary,
+                split_enabled=bool(getattr(job, "image_split_enabled", False)),
+                max_count=max(int(getattr(job, "max_image_count", 6) or 6), 1),
+            )
+            return
         if html_required:
             self._extract_html_document(summary)
 
     def _build_system_instruction(
         self,
         task: Task,
+        job: Job,
         talkers: List[str],
         time_window: dict,
         message_stats: Optional[message_stats_utils.MessageStats],
@@ -1429,21 +1464,25 @@ class SchedulerService:
             f"时间范围: {time_window['time_str']}\n"
             f"群聊: {', '.join(talkers)}\n"
         )
-        if not getattr(task, "system_prompt_custom_enabled", False):
-            return default_prompt
-        template = (getattr(task, "system_prompt_template", "") or "").strip()
-        if not template:
-            return default_prompt
-        replacements = {
-            "${time_range}": time_window.get("time_str", ""),
-            "${chatroom_name}": ", ".join(talkers),
-            "${message_count}": "",
-        }
-        if getattr(task, "system_prompt_include_message_count", False) and message_stats:
-            replacements["${message_count}"] = str(message_stats.total_messages)
-        result = template
-        for token, value in replacements.items():
-            result = result.replace(token, value)
+        result = default_prompt
+        if getattr(task, "system_prompt_custom_enabled", False):
+            template = (getattr(task, "system_prompt_template", "") or "").strip()
+            if template:
+                replacements = {
+                    "${time_range}": time_window.get("time_str", ""),
+                    "${chatroom_name}": ", ".join(talkers),
+                    "${message_count}": "",
+                }
+                if getattr(task, "system_prompt_include_message_count", False) and message_stats:
+                    replacements["${message_count}"] = str(message_stats.total_messages)
+                result = template
+                for token, value in replacements.items():
+                    result = result.replace(token, value)
+        if getattr(task, "task_type", "report") == "image_card" and bool(
+            getattr(job, "image_split_enabled", False)
+        ):
+            split_prompt = image_card_service.expand_split_prompt(getattr(job, "image_split_prompt", None))
+            result = f"{result.rstrip()}\n\n图片内容拆分规则（必须遵守）：\n{split_prompt}"
         return result or default_prompt
 
     async def _invoke_llm(self, model, prompt: str) -> tuple[str, Optional[int], Optional[int]]:
@@ -1562,6 +1601,35 @@ class SchedulerService:
                 )
                 await asyncio.sleep(retry_interval)
 
+    async def _deliver_image_bytes(
+        self,
+        *,
+        webhook,
+        app_id: str,
+        app_secret: str,
+        image_bytes: bytes,
+        filename: str,
+        retries: int,
+        retry_interval: int,
+        label: str,
+    ) -> str:
+        async def operation() -> str:
+            image_key = await feishu.upload_image(
+                app_id=app_id,
+                app_secret=app_secret,
+                image_bytes=image_bytes,
+                filename=filename,
+            )
+            await feishu.send_image(webhook, image_key=image_key, max_retries=1)
+            return image_key
+
+        return await self._retry_async(
+            operation,
+            retries=retries,
+            retry_interval=retry_interval,
+            label=label,
+        )
+
     async def _deliver_topic_card_image(
         self,
         *,
@@ -1572,19 +1640,12 @@ class SchedulerService:
         retries: int,
         retry_interval: int,
     ) -> Dict[str, Any]:
-        async def operation() -> str:
-            image_bytes = image.path.read_bytes()
-            image_key = await feishu.upload_image(
-                app_id=app_id,
-                app_secret=app_secret,
-                image_bytes=image_bytes,
-                filename=image.path.name,
-            )
-            await feishu.send_image(webhook, image_key=image_key, max_retries=1)
-            return image_key
-
-        image_key = await self._retry_async(
-            operation,
+        image_key = await self._deliver_image_bytes(
+            webhook=webhook,
+            app_id=app_id,
+            app_secret=app_secret,
+            image_bytes=image.path.read_bytes(),
+            filename=image.path.name,
             retries=retries,
             retry_interval=retry_interval,
             label="话题卡片图片推送",
@@ -1597,6 +1658,156 @@ class SchedulerService:
             "engine": image.engine,
             "layout": image.layout,
         }
+
+    async def _handle_image_card_result(
+        self,
+        *,
+        db,
+        task: Task,
+        job: Job,
+        execution: Execution,
+        raw_response: str,
+    ) -> None:
+        max_count = max(int(getattr(job, "max_image_count", 6) or 6), 1)
+        blocks = image_card_service.parse_content_blocks(
+            raw_response,
+            split_enabled=bool(getattr(job, "image_split_enabled", False)),
+            max_count=max_count,
+        )
+        image_prompt = (getattr(job, "image_prompt", None) or "").strip()
+        if not image_prompt:
+            raise RuntimeError("图片卡片作业未配置图片提示词模板")
+        image_model_id = int(getattr(task, "image_model_id", 0) or 0)
+        image_model = db.query(Model).filter(Model.id == image_model_id).first()
+        if not image_model or (getattr(image_model, "model_type", "text") or "text") != "image":
+            raise RuntimeError("图片卡片任务未绑定有效的图片模型")
+
+        push_webhook_ids = _parse_int_list(task.push_webhook_ids)
+        webhooks = webhook_repo.get_by_ids(db, push_webhook_ids) if push_webhook_ids else []
+        if not webhooks:
+            raise RuntimeError("图片卡片任务没有可用的推送 Webhook")
+        webhook_credentials = []
+        for webhook in webhooks:
+            app_id = (getattr(webhook, "feishu_app_id", None) or "").strip()
+            secret_cipher = getattr(webhook, "feishu_app_secret_cipher", None)
+            if not app_id or not secret_cipher:
+                raise RuntimeError(f"Webhook「{webhook.name}」未配置飞书应用 App ID / App Secret")
+            webhook_credentials.append((webhook, app_id, decrypt_value(secret_cipher)))
+
+        aspect_ratio = getattr(job, "image_aspect_ratio", "auto") or "auto"
+        resolution = getattr(job, "image_resolution", "auto") or "auto"
+        image_size = image_card_service.resolve_image_size(aspect_ratio, resolution)
+        max_retry = max(int(getattr(job, "max_retry", 0) or 0), 0)
+        retry_interval = max(int(getattr(job, "retry_interval_sec", 0) or 0), 1)
+        meta: Dict[str, Any] = {
+            "type": "image_card",
+            "block_count": len(blocks),
+            "image_model_id": image_model_id,
+            "image_model_name": image_model.provider,
+            "image_prompt_template_id": getattr(job, "image_prompt_template_id", None),
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+            "size": image_size,
+            "request_params": {
+                "model": image_model.provider,
+                "n": 1,
+                "size": image_size,
+                "output_format": "png",
+            },
+            "deliveries": [],
+        }
+        failures: List[Dict[str, Any]] = []
+
+        for index, block in enumerate(blocks, start=1):
+            try:
+                generated = await image_generation.generate_image(
+                    image_model,
+                    prompt=image_card_service.compose_image_prompt(image_prompt, block),
+                    size=image_size,
+                )
+            except Exception as exc:
+                error_message = _format_exception_message("图片生成", exc)
+                meta["deliveries"].append(
+                    {
+                        "image_index": index,
+                        "status": "failed",
+                        "requested_size": image_size,
+                        "error": error_message,
+                        "webhooks": [],
+                    }
+                )
+                meta["generation_error"] = {
+                    "image_index": index,
+                    "error": error_message,
+                }
+                execution.raw_response = json.dumps(meta, ensure_ascii=False)
+                raise RuntimeError(f"第 {index} 张图片生成失败：{exc}") from exc
+
+            actual_dimensions = image_generation.detect_image_dimensions(generated.content, generated.mime_type)
+            actual_width = actual_dimensions[0] if actual_dimensions else None
+            actual_height = actual_dimensions[1] if actual_dimensions else None
+            actual_size = f"{actual_width}x{actual_height}" if actual_dimensions else None
+            image_meta: Dict[str, Any] = {
+                "image_index": index,
+                "status": "success",
+                "requested_size": image_size,
+                "actual_width": actual_width,
+                "actual_height": actual_height,
+                "actual_size": actual_size,
+                "size_bytes": generated.size_bytes,
+                "mime_type": generated.mime_type,
+                "webhooks": [],
+            }
+            for webhook, app_id, app_secret in webhook_credentials:
+                delivery = {
+                    "webhook_id": getattr(webhook, "id", None),
+                    "webhook_name": getattr(webhook, "name", None),
+                    "status": "pending",
+                }
+                try:
+                    image_key = await self._deliver_image_bytes(
+                        webhook=webhook,
+                        app_id=app_id,
+                        app_secret=app_secret,
+                        image_bytes=generated.content,
+                        filename=f"image-card-{index}.png",
+                        retries=max_retry,
+                        retry_interval=retry_interval,
+                        label="图片卡片推送",
+                    )
+                    delivery.update({"status": "success", "image_key": image_key})
+                except Exception as exc:
+                    error_message = _format_exception_message("图片卡片推送", exc)
+                    delivery.update({"status": "failed", "error": error_message})
+                    failures.append(
+                        {
+                            "image_index": index,
+                            "webhook_id": getattr(webhook, "id", None),
+                            "webhook_name": getattr(webhook, "name", None),
+                            "error": error_message,
+                        }
+                    )
+                image_meta["webhooks"].append(delivery)
+            meta["deliveries"].append(image_meta)
+
+        if failures:
+            error_message = "图片卡片推送失败：" + "；".join(
+                f"第 {item['image_index']} 张 / {item.get('webhook_name') or item.get('webhook_id')}：{item['error']}"
+                for item in failures
+            )
+            execution.status = "failed"
+            execution.error_msg = error_message
+            alert_service.create_alert(
+                db,
+                task_id=task.id,
+                job_id=job.id,
+                execution_id=execution.id,
+                category="image_card",
+                message=error_message,
+                payload={"job_id": job.id, "failures": failures},
+            )
+            await self._notify_alert_webhooks(db, task, job, error_message)
+        execution.raw_response = json.dumps(meta, ensure_ascii=False)
 
     def _build_topic_card_image_failure_message(self, failures: List[Dict[str, Any]]) -> str:
         if not failures:

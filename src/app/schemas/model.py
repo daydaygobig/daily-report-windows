@@ -1,6 +1,6 @@
 """Pydantic schemas for LLM model entity."""
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -16,7 +16,8 @@ class ModelCreate(BaseModel):
     temperature: Optional[float] = Field(default=None, ge=0, le=100)
     top_p: Optional[float] = Field(default=None, ge=0, le=100)
     extra: Optional[dict] = None
-    request_standard: Optional[str] = Field(default="openai", pattern=r"^(openai|gemini|anthropic)$")
+    request_standard: Optional[str] = Field(default="openai", pattern=r"^(openai|gemini|anthropic|openai_images)$")
+    model_type: Literal["text", "image"] = "text"
 
 
 class ModelUpdate(BaseModel):
@@ -28,7 +29,8 @@ class ModelUpdate(BaseModel):
     temperature: Optional[float] = Field(default=None, ge=0, le=100)
     top_p: Optional[float] = Field(default=None, ge=0, le=100)
     extra: Optional[dict] = None
-    request_standard: Optional[str] = Field(default=None, pattern=r"^(openai|gemini|anthropic)$")
+    request_standard: Optional[str] = Field(default=None, pattern=r"^(openai|gemini|anthropic|openai_images)$")
+    model_type: Optional[Literal["text", "image"]] = None
 
 
 class ModelOut(ORMBase):
@@ -41,6 +43,7 @@ class ModelOut(ORMBase):
     top_p: Optional[float]
     extra: Optional[dict]
     request_standard: str
+    model_type: Literal["text", "image"] = "text"
 
 
 class ModelTestRequest(BaseModel):
@@ -54,7 +57,8 @@ class ModelTestRequest(BaseModel):
     timeout: Optional[int] = Field(default=None, ge=1)
     prompt: Optional[str] = None
     model_id: Optional[int] = Field(default=None, ge=1)
-    request_standard: Optional[str] = Field(default=None, pattern=r"^(openai|gemini|anthropic)$")
+    request_standard: Optional[str] = Field(default=None, pattern=r"^(openai|gemini|anthropic|openai_images)$")
+    model_type: Optional[Literal["text", "image"]] = None
 
 
 class RemoteModelsRequest(BaseModel):

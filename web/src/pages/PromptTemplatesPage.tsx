@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Button, Popconfirm, Space, Table, Tag, Typography, message } from "antd";
+import { Button, Popconfirm, Space, Table, Tabs, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PromptTemplateModal from "../components/PromptTemplateModal";
@@ -23,6 +23,7 @@ function PromptTemplatesPage() {
     template: null
   });
   const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({});
+  const [activeType, setActiveType] = useState<"regular" | "image">("regular");
 
   const closeModal = () => setModalState({ open: false, template: null });
 
@@ -141,23 +142,34 @@ function PromptTemplatesPage() {
   );
 
   const { columns, components } = useResizableColumns<PromptTemplate>(baseColumns, "prompt_templates_table_columns");
+  const filteredTemplates = (data ?? []).filter(
+    (template) => (template.template_type ?? "regular") === activeType
+  );
 
   return (
     <>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
         <div>
-          <Text type="secondary">提示词模板可在任务配置中复用，删除模板不会影响已保存任务。</Text>
+          <Text type="secondary">提示词模板可在任务或作业配置中复用，删除模板不会影响已保存配置。</Text>
         </div>
         <Button type="primary" onClick={() => setModalState({ open: true, template: null })}>
-          新建提示词
+          {activeType === "image" ? "新建图片提示词模板" : "新建提示词"}
         </Button>
       </div>
+      <Tabs
+        activeKey={activeType}
+        onChange={(key) => setActiveType(key as "regular" | "image")}
+        items={[
+          { key: "regular", label: "常规模板" },
+          { key: "image", label: "图片提示词模板" }
+        ]}
+      />
       <Table
         className="prompt-templates-table"
         components={components}
         rowKey={(record) => record.id}
         loading={isLoading}
-        dataSource={data ?? []}
+        dataSource={filteredTemplates}
         columns={columns}
         pagination={false}
         scroll={{ x: "max-content" }}
@@ -173,6 +185,7 @@ function PromptTemplatesPage() {
       <PromptTemplateModal
         open={modalState.open}
         initialValues={modalState.template}
+        templateType={activeType}
         confirmLoading={createMutation.isPending || updateMutation.isPending}
         onSubmit={handleSubmit}
         onCancel={closeModal}

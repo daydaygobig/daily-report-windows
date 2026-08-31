@@ -8,6 +8,7 @@ import {
   InputNumber,
   Menu,
   Modal,
+  Popover,
   Radio,
   Select,
   Space,
@@ -20,6 +21,12 @@ import type { MenuProps } from "antd";
 import dayjs from "dayjs";
 import type { Dayjs } from "dayjs";
 import type { Job, JobPayload, Task } from "../services/tasks";
+import type { PromptTemplate } from "../services/promptTemplates";
+import {
+  DEFAULT_IMAGE_SPLIT_PROMPT,
+  fetchPromptTemplates,
+  normalizeImageSplitPrompt
+} from "../services/promptTemplates";
 import type { GithubConfig, GithubConfigPayload } from "../services/githubConfigs";
 import { fetchGithubConfigs, createGithubConfig } from "../services/githubConfigs";
 import {
@@ -31,7 +38,7 @@ import {
   type ImaOption
 } from "../services/ima";
 import GithubConfigFormModal from "./GithubConfigFormModal";
-import { CheckCircleFilled, ReloadOutlined, SwapOutlined } from "@ant-design/icons";
+import { CheckCircleFilled, QuestionCircleOutlined, ReloadOutlined, SwapOutlined } from "@ant-design/icons";
 
 type JobFormValues = {
   name: string;
@@ -90,6 +97,12 @@ type JobFormValues = {
   topic_image_merge_threshold: number;
   topic_image_backup_enabled: boolean;
   topic_image_backup_path?: string;
+  image_prompt_template_id?: number;
+  image_split_enabled: boolean;
+  image_split_prompt?: string | null;
+  image_aspect_ratio: "auto" | "1:1" | "3:2" | "2:3" | "9:16";
+  image_resolution: "auto" | "1k" | "2k" | "4k";
+  max_image_count: number;
   ima_sync_enabled: boolean;
   ima_use_default_account: boolean;
   ima_account_id?: number;
@@ -124,6 +137,7 @@ type ViewMode = "classic" | "split";
 type SectionKey =
   | "basic"
   | "topic_card"
+  | "image_card"
   | "chatlog"
   | "message_stats"
   | "message_stats_github"
@@ -353,6 +367,12 @@ const defaultFormValues: JobFormValues = {
   topic_image_merge_threshold: 3,
   topic_image_backup_enabled: false,
   topic_image_backup_path: "",
+  image_prompt_template_id: undefined,
+  image_split_enabled: true,
+  image_split_prompt: DEFAULT_IMAGE_SPLIT_PROMPT,
+  image_aspect_ratio: "auto",
+  image_resolution: "auto",
+  max_image_count: 6,
   ima_sync_enabled: false,
   ima_use_default_account: true,
   ima_account_id: undefined,
@@ -517,6 +537,12 @@ const toJobFormValues = (job: Job): JobFormValues => {
     topic_image_merge_threshold: job.topic_image_merge_threshold ?? 3,
     topic_image_backup_enabled: job.topic_image_backup_enabled ?? false,
     topic_image_backup_path: job.topic_image_backup_path ?? "",
+    image_prompt_template_id: job.image_prompt_template_id ?? undefined,
+    image_split_enabled: job.image_split_enabled ?? true,
+    image_split_prompt: normalizeImageSplitPrompt(job.image_split_prompt),
+    image_aspect_ratio: job.image_aspect_ratio ?? "auto",
+    image_resolution: job.image_resolution ?? "auto",
+    max_image_count: job.max_image_count ?? 6,
     ima_sync_enabled: job.ima_sync_enabled ?? false,
     ima_use_default_account: job.ima_use_default_account ?? true,
     ima_account_id: job.ima_account_id ?? undefined,
@@ -562,6 +588,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
   const topicImageBackupEnabled = Form.useWatch("topic_image_backup_enabled", form);
   const topicTextLayout = Form.useWatch("topic_text_layout", form);
   const topicImageLayout = Form.useWatch("topic_image_layout", form);
+  const imageSplitEnabled = Form.useWatch("image_split_enabled", form);
   const imaSyncEnabled = Form.useWatch("ima_sync_enabled", form);
   const imaUseDefaultAccount = Form.useWatch("ima_use_default_account", form);
   const imaAccountId = Form.useWatch("ima_account_id", form);
@@ -574,6 +601,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
   const htmlBackupActiveView = Boolean(htmlBackupEnabled);
   const imaTargetActiveView = modelOutputBackupEnabled && imaSyncEnabled;
   const isTopicCardTask = taskType === "topic_card";
+  const isImageCardTask = taskType === "image_card";
   const [githubConfigs, setGithubConfigs] = useState<GithubConfig[]>([]);
   const [configModalOpen, setConfigModalOpen] = useState(false);
   const [configTarget, setConfigTarget] = useState<"deploy" | "message_stats">("deploy");
@@ -582,6 +610,8 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
   const [imaNoteFolders, setImaNoteFolders] = useState<ImaOption[]>([]);
   const [imaKnowledgeBases, setImaKnowledgeBases] = useState<ImaOption[]>([]);
   const [imaKnowledgeFolders, setImaKnowledgeFolders] = useState<ImaOption[]>([ROOT_IMA_KNOWLEDGE_FOLDER_OPTION]);
+  const [imagePromptTemplates, setImagePromptTemplates] = useState<PromptTemplate[]>([]);
+  const [imagePromptTemplatesLoading, setImagePromptTemplatesLoading] = useState(false);
   const [imaLoading, setImaLoading] = useState({
     noteFolders: false,
     knowledgeBases: false,
@@ -611,6 +641,10 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
     () => (imaKnowledgeFolders.length ? imaKnowledgeFolders : [ROOT_IMA_KNOWLEDGE_FOLDER_OPTION]),
     [imaKnowledgeFolders]
   );
+  const imagePromptTemplateOptions = useMemo(
+    () => imagePromptTemplates.map((template) => ({ label: template.name, value: template.id })),
+    [imagePromptTemplates]
+  );
 
   const setTimeField = (field: "start_time" | "end_time" | "execution_time", time: Dayjs) => {
     form.setFieldsValue({ [field]: time });
@@ -622,6 +656,21 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
       setGithubConfigs(list);
     } catch (error) {
       console.error("failed to load github configs", error);
+    }
+  }, []);
+
+  const loadImagePromptTemplates = useCallback(async () => {
+    setImagePromptTemplatesLoading(true);
+    try {
+      const list = await fetchPromptTemplates();
+      setImagePromptTemplates(
+        list.filter((template) => (template.template_type ?? "regular") === "image")
+      );
+    } catch (error) {
+      console.error("failed to load image prompt templates", error);
+      setImagePromptTemplates([]);
+    } finally {
+      setImagePromptTemplatesLoading(false);
     }
   }, []);
 
@@ -743,6 +792,11 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
     );
     void loadGithubConfigs();
     void loadImaAccounts();
+    if (isImageCardTask) {
+      void loadImagePromptTemplates();
+    } else {
+      setImagePromptTemplates([]);
+    }
     const nextAccountId = nextValues.ima_use_default_account ? defaultImaAccountId : nextValues.ima_account_id;
     if (nextAccountId) {
       void loadImaNoteFolders(nextAccountId);
@@ -763,7 +817,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
         mergeImaKnowledgeFolderOptions([], prev.find((item) => item.value === currentFolderValue))
       );
     }
-  }, [open, initialValues, form, loadGithubConfigs, loadImaAccounts, loadImaKnowledgeBases, loadImaKnowledgeFolders, loadImaNoteFolders, defaultImaAccountId]);
+  }, [open, initialValues, form, loadGithubConfigs, loadImaAccounts, loadImaKnowledgeBases, loadImaKnowledgeFolders, loadImaNoteFolders, defaultImaAccountId, isImageCardTask, loadImagePromptTemplates]);
 
   useEffect(() => {
     if (!open || !imaSyncEnabled) {
@@ -995,6 +1049,13 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
         isTopicCardTask && values.topic_image_enabled && values.topic_image_backup_enabled
           ? values.topic_image_backup_path?.trim() || undefined
           : undefined,
+      image_prompt_template_id: isImageCardTask ? values.image_prompt_template_id ?? null : null,
+      image_split_enabled: isImageCardTask ? values.image_split_enabled : false,
+      image_split_prompt:
+        isImageCardTask && values.image_split_enabled ? values.image_split_prompt?.trim() || DEFAULT_IMAGE_SPLIT_PROMPT : null,
+      image_aspect_ratio: isImageCardTask ? values.image_aspect_ratio ?? "auto" : "auto",
+      image_resolution: isImageCardTask ? values.image_resolution ?? "auto" : "auto",
+      max_image_count: isImageCardTask ? values.max_image_count ?? 6 : 6,
       ima_sync_enabled: imaSyncActive,
       ima_use_default_account: imaSyncActive ? values.ima_use_default_account : true,
       ima_account_id: imaSyncActive && !values.ima_use_default_account ? values.ima_account_id ?? null : null,
@@ -1051,6 +1112,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
   const sectionTitles: Record<SectionKey, string> = {
     basic: "基础设置",
     topic_card: "话题卡片配置",
+    image_card: "图片卡片配置",
     chatlog: "备份聊天记录",
     message_stats: "导出群消息统计",
     message_stats_github: "同步群消息统计到 GitHub",
@@ -1114,6 +1176,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
     () => [
       { key: "basic", label: renderNavLabel("基础设置") },
       ...(isTopicCardTask ? [{ key: "topic_card", label: renderNavLabel("话题卡片配置", true) }] : []),
+      ...(isImageCardTask ? [{ key: "image_card", label: renderNavLabel("图片卡片配置", true) }] : []),
       { key: "chatlog", label: renderNavLabel("备份聊天记录", chatlogBackupEnabled) },
       { key: "message_stats", label: renderNavLabel("导出群消息统计", messageStatsEnabled) },
       { key: "message_stats_github", label: renderNavLabel("同步群消息统计到 GitHub", messageStatsGithubActiveView, 18) },
@@ -1129,7 +1192,8 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
       modelOutputBackupEnabled,
       githubDeployEnabled,
       htmlBackupActiveView,
-      isTopicCardTask
+      isTopicCardTask,
+      isImageCardTask
     ]
   );
 
@@ -1217,6 +1281,135 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
             ) : null}
           </>
         ) : null}
+      </>
+    );
+  };
+
+  const renderImageCardSection = () => {
+    if (!isImageCardTask) {
+      return null;
+    }
+    return (
+      <>
+        <Form.Item
+          name="image_prompt_template_id"
+          label="图片提示词模板"
+          tooltip="该模板只负责每张图片的视觉风格和排版要求，会与拆分后的每个 Markdown 内容块组合后发送给图片模型。"
+          rules={[{ required: true, message: "请选择图片提示词模板" }]}
+        >
+          <Select
+            options={imagePromptTemplateOptions}
+            loading={imagePromptTemplatesLoading}
+            placeholder={imagePromptTemplatesLoading ? "加载中..." : "请选择图片提示词模板"}
+            optionFilterProp="label"
+            showSearch
+          />
+        </Form.Item>
+        <Form.Item
+          name="image_split_enabled"
+          label="逐话题生成"
+          valuePropName="checked"
+          tooltip="开启后，文本模型用固定标识分隔每个话题，系统为每个话题生成一张图片；关闭后，整份模型结果只生成一张图片。"
+        >
+          <Switch />
+        </Form.Item>
+        {imageSplitEnabled ? (
+          <>
+            <Form.Item
+              name="image_split_prompt"
+              label={
+                <Space size={4}>
+                  <span>内容拆分规则</span>
+                  <Popover
+                    placement="rightTop"
+                    trigger="click"
+                    title="内容拆分规则说明"
+                    content={
+                      <div style={{ width: 460, maxWidth: "70vw", userSelect: "text", cursor: "text" }}>
+                        <Typography.Paragraph style={{ marginBottom: 8 }}>
+                          这段规则会作为附加系统提示词发给文本模型，要求它为每个独立内容添加开始和结束标识。系统根据标识识别内容块数量，再逐块生成图片。
+                        </Typography.Paragraph>
+                        <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+                          这是给文本模型看的规则，不需要在这里粘贴待处理内容或 Markdown。下面两个只是边界参数；运行时，AI 会在两个标识之间生成一个内容块的完整正文。
+                        </Typography.Paragraph>
+                        <pre
+                          style={{
+                            margin: "8px 0 0",
+                            padding: 12,
+                            borderRadius: 6,
+                            background: "#f5f5f5",
+                            whiteSpace: "pre-wrap",
+                            userSelect: "text"
+                          }}
+                        >{`${"${block_start}"}\n${"${block_end}"}`}</pre>
+                        <Typography.Text type="secondary">
+                          自定义规则时请保留这两个参数，其他说明文字可以按需要修改。
+                        </Typography.Text>
+                      </div>
+                    }
+                  >
+                    <QuestionCircleOutlined style={{ color: "#8c8c8c", cursor: "pointer" }} />
+                  </Popover>
+                </Space>
+              }
+              rules={[
+                { required: true, message: "请输入内容拆分规则" },
+                {
+                  validator: (_, value?: string) =>
+                    value?.includes("${block_start}") && value?.includes("${block_end}")
+                      ? Promise.resolve()
+                      : Promise.reject(new Error("内容拆分规则必须同时包含 ${block_start} 和 ${block_end}"))
+                }
+              ]}
+            >
+              <Input.TextArea autoSize={{ minRows: 8, maxRows: 16 }} />
+            </Form.Item>
+            <Space style={{ marginTop: -12, marginBottom: 16 }}>
+              <Button type="link" onClick={() => form.setFieldValue("image_split_prompt", DEFAULT_IMAGE_SPLIT_PROMPT)}>
+                恢复默认
+              </Button>
+            </Space>
+          </>
+        ) : null}
+        <Form.Item
+          name="image_aspect_ratio"
+          label="图片比例"
+          tooltip="自适应由图片接口决定；指定比例后，系统会结合分辨率换算为实际像素尺寸。"
+          rules={[{ required: true, message: "请选择图片比例" }]}
+        >
+          <Select
+            options={[
+              { label: "自适应", value: "auto" },
+              { label: "方图 1:1", value: "1:1" },
+              { label: "横版 3:2", value: "3:2" },
+              { label: "竖版 2:3", value: "2:3" },
+              { label: "竖屏 9:16", value: "9:16" }
+            ]}
+          />
+        </Form.Item>
+        <Form.Item
+          name="image_resolution"
+          label="分辨率"
+          tooltip="分辨率越高，生成时间、接口费用和飞书上传体积通常越大；最终是否支持由图片模型供应商决定。"
+          rules={[{ required: true, message: "请选择分辨率" }]}
+        >
+          <Select
+            options={[
+              { label: "自适应", value: "auto" },
+              { label: "1K", value: "1k" },
+              { label: "2K", value: "2k" },
+              { label: "4K", value: "4k" }
+            ]}
+          />
+        </Form.Item>
+        <Form.Item
+          name="max_image_count"
+          label="单次最多生成图片"
+          tooltip="在调用图片接口前校验。识别出的内容超过上限时，本次作业直接失败，避免意外产生过多费用。"
+          rules={[{ required: true, message: "请输入单次最多生成图片数" }]}
+        >
+          <InputNumber min={1} max={20} style={{ width: "100%" }} />
+        </Form.Item>
       </>
     );
   };
@@ -2062,6 +2255,8 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
         return renderBasicSection();
       case "topic_card":
         return renderTopicCardSection();
+      case "image_card":
+        return renderImageCardSection();
       case "chatlog":
         return renderChatlogBackupSection();
       case "message_stats":
@@ -2085,6 +2280,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
     <>
       {renderBasicSection()}
       {renderTopicCardSection()}
+      {renderImageCardSection()}
       {renderChatlogBackupSection()}
       {renderMessageStatsSection(true)}
       {renderModelOutputSection()}
@@ -2098,6 +2294,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
     const sectionOrder: SectionKey[] = [
       "basic",
       ...(isTopicCardTask ? (["topic_card"] as SectionKey[]) : []),
+      ...(isImageCardTask ? (["image_card"] as SectionKey[]) : []),
       "chatlog",
       "message_stats",
       "message_stats_github",

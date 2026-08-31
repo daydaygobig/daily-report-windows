@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { Button, Popconfirm, Space, Table, Tag, Tooltip, Typography, message } from "antd";
+import { Button, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
@@ -14,6 +14,7 @@ const COLUMN_STORAGE_KEY = "models_table_column_widths";
 const DEFAULT_COLUMN_WIDTHS: Record<string, number> = {
   name: 160,
   provider: 200,
+  model_type: 110,
   base_url: 280,
   request_standard: 140,
   max_tokens: 120,
@@ -40,6 +41,26 @@ function ModelsPage() {
   const { data: models, isLoading } = useQuery({ queryKey: ["models"], queryFn: fetchModels });
   const [modalOpen, setModalOpen] = useState(false);
   const [editingModel, setEditingModel] = useState<Model | null>(null);
+  const [modelTypeFilter, setModelTypeFilter] = useState<Model["model_type"] | undefined>();
+  const [vendorFilter, setVendorFilter] = useState<string | undefined>();
+
+  const vendorOptions = useMemo(
+    () =>
+      Array.from(new Set((models ?? []).map((model) => model.name)))
+        .sort((left, right) => left.localeCompare(right, "zh-CN"))
+        .map((value) => ({ label: value, value })),
+    [models]
+  );
+
+  const filteredModels = useMemo(
+    () =>
+      (models ?? []).filter(
+        (model) =>
+          (!modelTypeFilter || model.model_type === modelTypeFilter) &&
+          (!vendorFilter || model.name === vendorFilter)
+      ),
+    [models, modelTypeFilter, vendorFilter]
+  );
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["models"] });
 
@@ -104,6 +125,14 @@ function ModelsPage() {
     () => [
       { title: "模型厂商", dataIndex: "name", key: "name", ellipsis: true },
       {
+        title: "模型用途",
+        dataIndex: "model_type",
+        key: "model_type",
+        render: (value: Model["model_type"]) => (
+          <Tag color={value === "image" ? "purple" : "blue"}>{value === "image" ? "图片模型" : "文本模型"}</Tag>
+        )
+      },
+      {
         title: "模型ID",
         dataIndex: "provider",
         key: "provider",
@@ -128,7 +157,8 @@ function ModelsPage() {
           const mapping: Record<string, string> = {
             openai: "OpenAI",
             gemini: "Gemini",
-            anthropic: "Anthropic"
+            anthropic: "Anthropic",
+            openai_images: "OpenAI Images"
           };
           return <Tag>{mapping[value] ?? value}</Tag>;
         }
@@ -205,8 +235,31 @@ function ModelsPage() {
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
-        <div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <Text type="secondary">密钥不会在列表中展示，更新时留空即可保留原值。</Text>
+          <Space wrap>
+            <Select<Model["model_type"]>
+              allowClear
+              placeholder="模型用途"
+              style={{ width: 140 }}
+              value={modelTypeFilter}
+              onChange={setModelTypeFilter}
+              options={[
+                { label: "文本模型", value: "text" },
+                { label: "图片模型", value: "image" }
+              ]}
+            />
+            <Select<string>
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder="模型厂商"
+              style={{ width: 180 }}
+              value={vendorFilter}
+              onChange={setVendorFilter}
+              options={vendorOptions}
+            />
+          </Space>
         </div>
         <Button type="primary" onClick={openCreateModal}>
           新增模型
@@ -216,13 +269,13 @@ function ModelsPage() {
         columns={columns}
         components={components}
         loading={isLoading}
-        dataSource={models ?? []}
+        dataSource={filteredModels}
         rowKey={(record) => record.id}
         pagination={false}
         tableLayout="fixed"
         style={{ wordBreak: "break-word" }}
         scroll={{ x: "max-content" }}
-        locale={{ emptyText: "暂无模型" }}
+        locale={{ emptyText: modelTypeFilter || vendorFilter ? "没有符合筛选条件的模型" : "暂无模型" }}
       />
       <ModelFormModal
         open={modalOpen}

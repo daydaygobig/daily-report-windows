@@ -17,3 +17,4 @@ class Model(BaseModel):
     top_p = Column(Float, nullable=True)
     extra = Column(Text, nullable=True)
     request_standard = Column(String(20), nullable=False, default="openai")
+    model_type = Column(String(20), nullable=False, default="text")

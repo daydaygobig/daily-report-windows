@@ -6,6 +6,8 @@ from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 from loguru import logger
 
+from .default_prompt_templates import DEFAULT_PROMPT_TEMPLATES
+
 
 def ensure_schema(engine: Engine) -> None:
     """Add newly introduced columns when running on existing SQLite databases."""
@@ -49,6 +51,14 @@ def ensure_schema(engine: Engine) -> None:
     _ensure_column(engine, "tasks", "task_type", "TEXT NOT NULL DEFAULT 'report'")
     _ensure_column(engine, "tasks", "topic_style_config", "TEXT")
     _ensure_column(engine, "tasks", "model_sequence", "TEXT")
+    _ensure_column(engine, "models", "model_type", "TEXT NOT NULL DEFAULT 'text'")
+    _ensure_column(engine, "prompt_templates", "template_type", "TEXT NOT NULL DEFAULT 'regular'")
+    _ensure_column(engine, "prompt_templates", "image_split_enabled", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(engine, "prompt_templates", "image_split_prompt", "TEXT")
+    _ensure_default_prompt_templates(engine)
+    _ensure_column(engine, "tasks", "image_model_id", "INTEGER")
+    _ensure_column(engine, "tasks", "image_split_enabled", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(engine, "tasks", "image_split_prompt", "TEXT")
     _ensure_column(engine, "jobs", "message_stats_enabled", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(engine, "jobs", "message_stats_formats", "TEXT")
     _ensure_column(engine, "jobs", "message_stats_path", "TEXT")
@@ -93,6 +103,14 @@ def ensure_schema(engine: Engine) -> None:
     _ensure_column(engine, "jobs", "topic_image_merge_threshold", "INTEGER NOT NULL DEFAULT 3")
     _ensure_column(engine, "jobs", "topic_image_backup_enabled", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(engine, "jobs", "topic_image_backup_path", "TEXT")
+    _ensure_column(engine, "jobs", "image_prompt_template_id", "INTEGER")
+    _ensure_column(engine, "jobs", "image_prompt", "TEXT")
+    _ensure_column(engine, "jobs", "image_split_enabled", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(engine, "jobs", "image_split_prompt", "TEXT")
+    _backfill_image_card_job_templates(engine)
+    _ensure_column(engine, "jobs", "image_aspect_ratio", "TEXT NOT NULL DEFAULT 'auto'")
+    _ensure_column(engine, "jobs", "image_resolution", "TEXT NOT NULL DEFAULT 'auto'")
+    _ensure_column(engine, "jobs", "max_image_count", "INTEGER NOT NULL DEFAULT 6")
     _ensure_column(engine, "jobs", "disk_alert_enabled", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(engine, "jobs", "disk_alert_threshold_bytes", "INTEGER NOT NULL DEFAULT 104857600")
     _ensure_column(engine, "executions", "exported_files", "TEXT")
@@ -409,6 +427,104 @@ def _ensure_column(engine: Engine, table: str, column: str, ddl: str) -> bool:
     with engine.begin() as conn:
         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
     return True
+
+
+def _backfill_image_card_job_templates(engine: Engine) -> None:
+    """Move legacy image-template snapshots from image-card tasks to their jobs."""
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                UPDATE jobs
+                SET image_prompt_template_id = (
+                        SELECT tasks.prompt_template_id
+                        FROM tasks
+                        JOIN prompt_templates ON prompt_templates.id = tasks.prompt_template_id
+                        WHERE tasks.id = jobs.task_id
+                          AND tasks.task_type = 'image_card'
+                          AND prompt_templates.template_type = 'image'
+                    ),
+                    image_prompt = (
+                        SELECT prompt_templates.content
+                        FROM tasks
+                        JOIN prompt_templates ON prompt_templates.id = tasks.prompt_template_id
+                        WHERE tasks.id = jobs.task_id
+                          AND tasks.task_type = 'image_card'
+                          AND prompt_templates.template_type = 'image'
+                    ),
+                    image_split_enabled = COALESCE((
+                        SELECT prompt_templates.image_split_enabled
+                        FROM tasks
+                        JOIN prompt_templates ON prompt_templates.id = tasks.prompt_template_id
+                        WHERE tasks.id = jobs.task_id
+                          AND tasks.task_type = 'image_card'
+                          AND prompt_templates.template_type = 'image'
+                    ), 0),
+                    image_split_prompt = (
+                        SELECT prompt_templates.image_split_prompt
+                        FROM tasks
+                        JOIN prompt_templates ON prompt_templates.id = tasks.prompt_template_id
+                        WHERE tasks.id = jobs.task_id
+                          AND tasks.task_type = 'image_card'
+                          AND prompt_templates.template_type = 'image'
+                    )
+                WHERE jobs.image_prompt_template_id IS NULL
+                  AND jobs.image_prompt IS NULL
+                  AND EXISTS (
+                      SELECT 1
+                      FROM tasks
+                      JOIN prompt_templates ON prompt_templates.id = tasks.prompt_template_id
+                      WHERE tasks.id = jobs.task_id
+                        AND tasks.task_type = 'image_card'
+                        AND prompt_templates.template_type = 'image'
+                  )
+                """
+            )
+        )
+    if result.rowcount:
+        logger.info("已迁移 %s 个图片卡片作业的旧图片提示词配置", result.rowcount)
+
+
+def _ensure_default_prompt_templates(engine: Engine) -> None:
+    """Seed reference templates once, without overwriting user edits."""
+
+    with engine.begin() as conn:
+        for template in DEFAULT_PROMPT_TEMPLATES:
+            existing = conn.execute(
+                text("SELECT id FROM prompt_templates WHERE name = :name LIMIT 1"),
+                {"name": template["name"]},
+            ).first()
+            if existing:
+                continue
+            legacy = conn.execute(
+                text("SELECT id FROM prompt_templates WHERE name = :name LIMIT 1"),
+                {"name": template["legacy_name"]},
+            ).first()
+            if legacy:
+                conn.execute(
+                    text("UPDATE prompt_templates SET name = :name, updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
+                    {"name": template["name"], "id": legacy[0]},
+                )
+                continue
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO prompt_templates
+                        (created_at, updated_at, name, content, description, template_type,
+                         image_split_enabled, image_split_prompt)
+                    VALUES
+                        (CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, :name, :content, :description,
+                         :template_type, 0, NULL)
+                    """
+                ),
+                {
+                    "name": template["name"],
+                    "content": template["content"],
+                    "description": template["description"],
+                    "template_type": template["template_type"],
+                },
+            )
 
 
 def _ensure_table(engine: Engine, table: str, ddl: str) -> None:

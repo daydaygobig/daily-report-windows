@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AutoComplete, Button, Form, Input, InputNumber, Modal, Select, Space, message } from "antd";
+import { Alert, AutoComplete, Button, Form, Image, Input, InputNumber, Modal, Select, Space, message } from "antd";
 import type { Model, ModelCreatePayload, ModelUpdatePayload } from "../services/models";
 import { fetchRemoteModels, testModelConnection } from "../services/models";
 
@@ -17,7 +17,8 @@ type ModelFormValues = {
   max_tokens_param?: MaxTokensParam;
   thinking_level?: ThinkingLevel;
   extra?: string;
-  request_standard: "openai" | "gemini" | "anthropic";
+  request_standard: "openai" | "gemini" | "anthropic" | "openai_images";
+  model_type: "text" | "image";
 };
 
 type ModelFormModalProps = {
@@ -45,7 +46,8 @@ const defaultValues: ModelFormValues = {
   max_tokens_param: "max_tokens",
   thinking_level: "none",
   extra: JSON.stringify(DEFAULT_EXTRA_OBJECT, null, 2),
-  request_standard: "openai"
+  request_standard: "openai",
+  model_type: "text"
 };
 
 const cloneObject = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -154,7 +156,9 @@ const toFormValues = (model: Model): ModelFormValues => {
     max_tokens_param: maxTokensParam,
     thinking_level: thinkingLevel,
     extra: extraString,
-    request_standard: (model.request_standard as "openai" | "gemini" | "anthropic") ?? "openai"
+    request_standard:
+      (model.request_standard as "openai" | "gemini" | "anthropic" | "openai_images") ?? "openai",
+    model_type: model.model_type ?? "text"
   };
 };
 
@@ -170,6 +174,9 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
   const [modelsLoading, setModelsLoading] = useState(false);
   const [testing, setTesting] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
+  const modelType = Form.useWatch("model_type", form) ?? "text";
 
   const isEdit = Boolean(initialValues);
   const title = useMemo(() => (isEdit ? "编辑模型" : "新增模型"), [isEdit]);
@@ -179,6 +186,8 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
       setRemoteModels([]);
       setModelOptionsOpen(false);
       setAdvancedOpen(false);
+      setImagePreview(null);
+      setImagePreviewOpen(false);
       form.resetFields();
       return;
     }
@@ -188,6 +197,8 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
     setRemoteModels([]);
     setModelOptionsOpen(false);
     setAdvancedOpen(false);
+    setImagePreview(null);
+    setImagePreviewOpen(false);
   }, [open, initialValues, form]);
 
   const buildExtraObject = (values: ModelFormValues): Record<string, unknown> => {
@@ -223,7 +234,8 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
       temperature: temperature ?? null,
       top_p: topP ?? null,
       extra: extraObject,
-      request_standard: values.request_standard
+      request_standard: values.request_standard,
+      model_type: values.model_type
     };
 
     const apiKey = values.api_key?.trim();
@@ -314,9 +326,27 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
       return;
     }
 
+    if (values.model_type === "image") {
+      const confirmed = await new Promise<boolean>((resolve) => {
+        Modal.confirm({
+          title: "确认进行图片连通性测试？",
+          content: "测试会真实调用一次图片接口并产生费用。系统会生成一张低质量小测试图，不会保存到本地。",
+          okText: "开始测试",
+          cancelText: "取消",
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false)
+        });
+      });
+      if (!confirmed) {
+        return;
+      }
+    }
+
     setTesting(true);
+    setImagePreview(null);
+    setImagePreviewOpen(false);
     try {
-      await testModelConnection({
+      const result = await testModelConnection({
         provider,
         base_url: baseUrl,
         api_key: apiKey || undefined,
@@ -325,8 +355,16 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
         top_p: typeof values.top_p === "number" ? values.top_p : undefined,
         extra: extraObject,
         model_id: modelId,
-        request_standard: values.request_standard
+        request_standard: values.model_type === "image" ? "openai_images" : values.request_standard,
+        model_type: values.model_type
       });
+      if (values.model_type === "image") {
+        if (!result.preview) {
+          throw new Error("图片接口返回成功，但没有可预览的图片");
+        }
+        setImagePreview(result.preview);
+        setImagePreviewOpen(true);
+      }
       message.success("连通性测试成功");
     } catch (error: unknown) {
       message.error(getServerErrorMessage(error, "连通性测试失败"));
@@ -337,7 +375,14 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
 
   const handleCancel = () => {
     form.resetFields();
+    setImagePreview(null);
+    setImagePreviewOpen(false);
     onCancel();
+  };
+
+  const closeImagePreview = () => {
+    setImagePreviewOpen(false);
+    setImagePreview(null);
   };
 
   const remoteModelOptions = remoteModels.map((item) => ({
@@ -353,17 +398,18 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
         <div style={{ paddingTop: 8 }}>
           <p>配置步骤：</p>
           <ol style={{ paddingLeft: 20 }}>
-            <li>填写模型厂商、模型ID、完整接口地址和 API Key。</li>
+            <li>填写模型厂商、模型ID、Base URL 和 API Key。</li>
             <li>模型ID是真正发给厂商的 <code>model</code> 字段，例如 <code>deepseek-ai/DeepSeek-V3.2-Exp</code>。</li>
             <li>Base URL 当前会被系统直接请求，请填写完整接口地址，例如 <code>https://api.deepseek.com/chat/completions</code>。</li>
             <li>根据接口协议选择请求标准：OpenAI=Chat Completions，Gemini=generateContent，Anthropic=/v1/messages。</li>
             <li>可点击“拉取模型列表”尝试从厂商接口获取模型ID；如果厂商不支持，手填即可。</li>
             <li>最大输出 token、温度、Top P、思考级别会按请求标准自动写入实际请求体；OpenAI 兼容请求固定使用流式返回。</li>
+            <li>图片模型使用 OpenAI Images 兼容接口，只填域名即可；系统会自动补齐并去重 /v1/images/generations。</li>
           </ol>
           <p style={{ marginTop: 12 }}>补充说明：</p>
           <ul style={{ paddingLeft: 20 }}>
             <li>API Key 会在本地编辑弹窗中展示，点击密码框的小眼睛即可查看。</li>
-            <li>高级配置里的 <code>payload</code> 会最后合并进请求体，仅用于厂商特殊字段覆盖。</li>
+            <li>高级配置里的 <code>payload</code> 用于增加厂商特殊字段；图片模型的模型ID、提示词、尺寸、单张数量和 PNG 格式由系统锁定。</li>
             <li>如果厂商要求 <code>max_completion_tokens</code>，可在“最大输出参数名”中切换。</li>
           </ul>
         </div>
@@ -372,7 +418,8 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
   };
 
   return (
-    <Modal
+    <>
+      <Modal
       open={open}
       title={title}
       destroyOnClose
@@ -404,6 +451,19 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
           ]}
         >
           <Input placeholder="例如：火山方舟 Coding Plan" />
+        </Form.Item>
+        <Form.Item label="模型用途" name="model_type" rules={[{ required: true }]}>
+          <Select
+            options={[
+              { label: "文本模型", value: "text" },
+              { label: "图片模型", value: "image" }
+            ]}
+            onChange={(value) => {
+              form.setFieldValue("request_standard", value === "image" ? "openai_images" : "openai");
+              setImagePreview(null);
+              setImagePreviewOpen(false);
+            }}
+          />
         </Form.Item>
         <Form.Item
           label="模型ID"
@@ -442,9 +502,20 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
           </Space.Compact>
         </Form.Item>
         <Form.Item label="Base URL" name="base_url">
-          <Input placeholder="完整接口地址，例如 https://api.deepseek.com/chat/completions" />
+          <Input
+            placeholder={
+              modelType === "image"
+                ? "只填域名即可，例如 https://api.openai.com"
+                : "完整接口地址，例如 https://api.deepseek.com/chat/completions"
+            }
+          />
         </Form.Item>
-        <Form.Item
+        {modelType === "image" ? (
+          <div style={{ marginTop: -16, marginBottom: 16, color: "rgba(0, 0, 0, 0.45)" }}>
+            系统会自动补齐 <code>/v1/images/generations</code>；已填写完整路径时不会重复追加。
+          </div>
+        ) : null}
+        {modelType === "text" ? <Form.Item
           label="请求标准"
           name="request_standard"
           tooltip="决定请求体/鉴权标准。OpenAI=Chat Completions；Gemini=generateContent；Anthropic=/v1/messages。"
@@ -457,7 +528,11 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
               { label: "Anthropic", value: "anthropic" }
             ]}
           />
-        </Form.Item>
+        </Form.Item> : (
+          <Form.Item name="request_standard" hidden>
+            <Input />
+          </Form.Item>
+        )}
         <Form.Item
           label="API Key"
           name="api_key"
@@ -472,7 +547,7 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
         >
           <Input.Password placeholder={isEdit ? "已从数据库加载，可点击小眼睛查看" : "请输入密钥"} />
         </Form.Item>
-        <Form.Item label="最大输出 token" name="max_tokens">
+        {modelType === "text" ? <><Form.Item label="最大输出 token" name="max_tokens">
           <InputNumber min={1} style={{ width: "100%" }} placeholder="可选，例如 4000" />
         </Form.Item>
         <Form.Item
@@ -504,7 +579,15 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
               { label: "xhigh / max", value: "xhigh" }
             ]}
           />
-        </Form.Item>
+        </Form.Item></> : (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="图片连通性测试会真实生成一张图片并产生费用"
+            description="测试固定使用 1024×1024、低质量、无文字的简单图案；成功后会打开独立结果弹窗，需要手动关闭。"
+          />
+        )}
         <Button type="link" style={{ padding: 0, marginBottom: 12 }} onClick={() => setAdvancedOpen((value) => !value)}>
           {advancedOpen ? "收起高级配置" : "展开高级配置"}
         </Button>
@@ -530,7 +613,35 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
           </Form.Item>
         ) : null}
       </Form>
-    </Modal>
+      </Modal>
+      <Modal
+        open={imagePreviewOpen && Boolean(imagePreview)}
+        title="图片模型连通性测试结果"
+        width={560}
+        maskClosable={false}
+        destroyOnClose
+        onCancel={closeImagePreview}
+        footer={[
+          <Button key="close" type="primary" onClick={closeImagePreview}>
+            关闭
+          </Button>
+        ]}
+      >
+        <div style={{ textAlign: "center", padding: "8px 0" }}>
+          {imagePreview ? (
+            <Image
+              preview={false}
+              src={imagePreview}
+              alt="图片模型连通性测试结果"
+              style={{ maxWidth: "100%", maxHeight: "60vh", objectFit: "contain" }}
+            />
+          ) : null}
+          <div style={{ marginTop: 12, color: "rgba(0, 0, 0, 0.45)" }}>
+            图片仅用于本次连通性确认，不会保存到本地。
+          </div>
+        </div>
+      </Modal>
+    </>
   );
 }
 

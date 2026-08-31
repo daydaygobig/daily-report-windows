@@ -5,6 +5,7 @@ import type { PromptTemplate, PromptTemplatePayload } from "../services/promptTe
 type PromptTemplateModalProps = {
   open: boolean;
   initialValues?: PromptTemplate | null;
+  templateType?: "regular" | "image";
   confirmLoading?: boolean;
   onSubmit: (payload: PromptTemplatePayload) => void | Promise<void>;
   onCancel: () => void;
@@ -13,12 +14,25 @@ type PromptTemplateModalProps = {
 const defaultValues: PromptTemplatePayload = {
   name: "",
   content: "",
-  description: ""
+  description: "",
+  template_type: "regular",
+  image_split_enabled: false,
+  image_split_prompt: null
 };
 
-function PromptTemplateModal({ open, initialValues, confirmLoading, onSubmit, onCancel }: PromptTemplateModalProps) {
+function PromptTemplateModal({
+  open,
+  initialValues,
+  templateType = "regular",
+  confirmLoading,
+  onSubmit,
+  onCancel
+}: PromptTemplateModalProps) {
   const [form] = Form.useForm<PromptTemplatePayload>();
-  const title = initialValues ? "编辑提示词" : "新建提示词";
+  const effectiveType = initialValues?.template_type ?? templateType;
+  const title = initialValues
+    ? `编辑${effectiveType === "image" ? "图片提示词模板" : "提示词"}`
+    : `新建${effectiveType === "image" ? "图片提示词模板" : "提示词"}`;
 
   useEffect(() => {
     if (!open) {
@@ -29,12 +43,20 @@ function PromptTemplateModal({ open, initialValues, confirmLoading, onSubmit, on
       form.setFieldsValue({
         name: initialValues.name,
         content: initialValues.content,
-        description: initialValues.description ?? ""
+        description: initialValues.description ?? "",
+        template_type: initialValues.template_type ?? "regular",
+        image_split_enabled: false,
+        image_split_prompt: null
       });
     } else {
-      form.setFieldsValue(defaultValues);
+      form.setFieldsValue({
+        ...defaultValues,
+        template_type: templateType,
+        image_split_enabled: false,
+        image_split_prompt: null
+      });
     }
-  }, [open, initialValues, form]);
+  }, [open, initialValues, templateType, form]);
 
   return (
     <Modal
@@ -50,6 +72,9 @@ function PromptTemplateModal({ open, initialValues, confirmLoading, onSubmit, on
       }}
     >
       <Form<PromptTemplatePayload> layout="vertical" form={form} onFinish={onSubmit}>
+        <Form.Item name="template_type" hidden>
+          <Input />
+        </Form.Item>
         <Form.Item
           label="提示词名称"
           name="name"

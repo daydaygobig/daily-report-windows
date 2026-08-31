@@ -31,6 +31,7 @@ def task_to_dict(task: Task) -> Dict[str, Any]:
         "task_type": getattr(task, "task_type", "report") or "report",
         "prompt": task.prompt,
         "model_id": task.model_id,
+        "image_model_id": getattr(task, "image_model_id", None),
         "model_sequence": model_sequence,
         "prompt_template_id": getattr(task, "prompt_template_id", None),
         "talkers": _load_json(task.talkers, default=[]),
@@ -147,6 +148,13 @@ def job_to_dict(job: Job) -> Dict[str, Any]:
         "topic_image_merge_threshold": getattr(job, "topic_image_merge_threshold", 3) or 3,
         "topic_image_backup_enabled": bool(getattr(job, "topic_image_backup_enabled", False)),
         "topic_image_backup_path": getattr(job, "topic_image_backup_path", None),
+        "image_prompt_template_id": getattr(job, "image_prompt_template_id", None),
+        "image_prompt": getattr(job, "image_prompt", None),
+        "image_split_enabled": bool(getattr(job, "image_split_enabled", False)),
+        "image_split_prompt": getattr(job, "image_split_prompt", None),
+        "image_aspect_ratio": getattr(job, "image_aspect_ratio", "auto") or "auto",
+        "image_resolution": getattr(job, "image_resolution", "auto") or "auto",
+        "max_image_count": getattr(job, "max_image_count", 6) or 6,
     }
 
 

@@ -14,10 +14,11 @@ const { Text } = Typography;
 
 type TaskFormValues = {
   name: string;
-  task_type: "report" | "export" | "topic_card";
+  task_type: "report" | "export" | "topic_card" | "image_card";
   prompt: string;
   model_id?: number;
   model_sequence?: { model_id?: number; max_attempts?: number }[];
+  image_model_id?: number;
   talkers: string[];
   talker_names?: string[];
   push_webhook_ids: number[];
@@ -359,6 +360,7 @@ const defaultFormValues: TaskFormValues = {
   prompt: "",
   model_id: undefined,
   model_sequence: [{ model_id: undefined, max_attempts: 2 }],
+  image_model_id: undefined,
   talkers: [],
   talker_names: [],
   push_webhook_ids: [],
@@ -376,6 +378,7 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
   const [form] = Form.useForm<TaskFormValues>();
   const title = useMemo(() => (initialValues ? "编辑任务" : "新增任务"), [initialValues]);
   const [modelOptions, setModelOptions] = useState<Option<number>[]>([]);
+  const [imageModelOptions, setImageModelOptions] = useState<Option<number>[]>([]);
   const [chatroomOptions, setChatroomOptions] = useState<Option<string>[]>([]);
   const [webhookOptions, setWebhookOptions] = useState<Option<number>[]>([]);
   const [chatroomLoading, setChatroomLoading] = useState(false);
@@ -391,10 +394,20 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
   const taskType = Form.useWatch("task_type", form) ?? "report";
   const isExportTask = taskType === "export";
   const isTopicCardTask = taskType === "topic_card";
+  const isImageCardTask = taskType === "image_card";
 
   const loadModels = useCallback(async () => {
     const models = await fetchModels();
-    setModelOptions(models.map((model) => ({ label: `${model.name} (${model.provider})`, value: model.id })));
+    setModelOptions(
+      models
+        .filter((model) => (model.model_type ?? "text") === "text")
+        .map((model) => ({ label: `${model.name} (${model.provider})`, value: model.id }))
+    );
+    setImageModelOptions(
+      models
+        .filter((model) => model.model_type === "image")
+        .map((model) => ({ label: `${model.name} (${model.provider})`, value: model.id }))
+    );
   }, []);
 
   const loadWebhooks = useCallback(async () => {
@@ -463,6 +476,7 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
                       max_attempts: item.max_attempts || 2
                     }))
                   : [{ model_id: initialValues.model_id ?? undefined, max_attempts: 2 }]),
+          image_model_id: initialValues.image_model_id ?? undefined,
           talkers: initialValues.talkers ?? [],
           talker_names: initialValues.talker_names ?? [],
           push_webhook_ids: initialValues.push_webhook_ids ?? [],
@@ -482,9 +496,10 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
     void loadWebhooks();
     void loadChatrooms(undefined, values.talkers);
     void loadTemplates().then((list) => {
-      if (!initialValues?.prompt_template_id && values.task_type !== "export" && list?.[0]) {
-        setSelectedTemplateId(list[0].id);
-        form.setFieldsValue({ prompt: list[0].content });
+      const firstMatching = list?.find((item) => (item.template_type ?? "regular") === "regular");
+      if (!initialValues?.prompt_template_id && values.task_type !== "export" && firstMatching) {
+        setSelectedTemplateId(firstMatching.id);
+        form.setFieldsValue({ prompt: firstMatching.content });
       }
     });
   }, [open, initialValues, form, loadModels, loadWebhooks, loadChatrooms, loadTemplates]);
@@ -513,7 +528,22 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
     options: chatroomOptions
   };
 
-  const templateOptions = templates.map((tpl) => ({ label: tpl.name, value: tpl.id }));
+  const templateOptions = templates
+    .filter((tpl) => (tpl.template_type ?? "regular") === "regular")
+    .map((tpl) => ({ label: tpl.name, value: tpl.id }));
+
+  useEffect(() => {
+    if (!open || isExportTask || templates.length === 0) {
+      return;
+    }
+    const current = templates.find((item) => item.id === selectedTemplateId);
+    if (current && (current.template_type ?? "regular") === "regular") {
+      return;
+    }
+    const firstMatching = templates.find((item) => (item.template_type ?? "regular") === "regular");
+    setSelectedTemplateId(firstMatching?.id ?? null);
+    form.setFieldValue("prompt", firstMatching?.content ?? "");
+  }, [open, isExportTask, templates, selectedTemplateId, form]);
 
   const handleTemplateChange = (value?: number) => {
     setSelectedTemplateId(value ?? null);
@@ -550,6 +580,10 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
       message.error("请至少选择一个模型");
       return;
     }
+    if (isImageCardTask && !values.image_model_id) {
+      message.error("请选择图片模型");
+      return;
+    }
     const optionMap = new Map(chatroomOptions.map((item) => [item.value, item.label]));
     const talkerPairs = values.talkers
       .map((id, idx) => ({
@@ -563,6 +597,7 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
       task_type: values.task_type,
       prompt: isExportTask ? "" : values.prompt,
       model_id: isExportTask ? null : values.model_sequence?.[0]?.model_id ?? null,
+      image_model_id: isImageCardTask ? values.image_model_id ?? null : null,
       model_sequence: isExportTask
         ? null
         : modelSequence
@@ -616,6 +651,7 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
             options={[
               { label: "日报", value: "report" },
               { label: "话题卡片", value: "topic_card" },
+              { label: "图片卡片", value: "image_card" },
               { label: "数据导出", value: "export" }
             ]}
           />
@@ -684,7 +720,15 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
         ) : null}
         {!isExportTask ? (
           <>
-            <Form.Item label="提示词模板" required tooltip="日报和话题卡片任务需要提示词模板；数据导出任务不需要提示词。">
+            <Form.Item
+              label="提示词模板"
+              required
+              tooltip={
+                isImageCardTask
+                  ? "供文本模型生成 Markdown 中间产物；图片提示词模板在作业的图片卡片配置中选择。"
+                  : "供文本模型处理聊天记录。"
+              }
+            >
               <Select
                 value={selectedTemplateId ?? undefined}
                 options={templateOptions}
@@ -826,6 +870,21 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
                 </div>
               )}
             </Form.List>
+            {isImageCardTask ? (
+              <Form.Item
+                label="图片模型"
+                name="image_model_id"
+                rules={[{ required: true, message: "请选择图片模型" }]}
+                tooltip="文本模型先生成 Markdown；图片模型再按拆分结果逐张生图。"
+              >
+                <Select
+                  showSearch
+                  placeholder={imageModelOptions.length ? "请选择图片模型" : "请先在模型配置中新增图片模型"}
+                  options={imageModelOptions}
+                  optionFilterProp="label"
+                />
+              </Form.Item>
+            ) : null}
           </>
         ) : null}
         <Form.Item label="群聊名称" name="talkers" tooltip="可搜索群聊名称或备注，支持多选。">
@@ -846,6 +905,7 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
       <PromptTemplateModal
         open={templateModalOpen}
         initialValues={null}
+        templateType="regular"
         confirmLoading={templateModalLoading}
         onSubmit={handleTemplateModalSubmit}
         onCancel={() => setTemplateModalOpen(false)}

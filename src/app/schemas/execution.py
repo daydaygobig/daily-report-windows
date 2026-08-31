@@ -47,3 +47,4 @@ class ExecutionOut(ORMBase):
     exported_files: Optional[List[Dict[str, Any]]] = None
     disk_io: Optional[Dict[str, Any]] = None
     topic_card_meta: Optional[Dict[str, Any]] = None
+    image_card_meta: Optional[Dict[str, Any]] = None

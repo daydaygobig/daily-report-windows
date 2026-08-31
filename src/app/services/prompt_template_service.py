@@ -3,12 +3,14 @@
 from sqlalchemy.orm import Session
 
 from ..models.prompt_template import PromptTemplate
+from ..repositories.job_repo import JobRepository
 from ..repositories.prompt_template_repo import PromptTemplateRepository
 from ..repositories.task_repo import TaskRepository
 from ..schemas.prompt_template import PromptTemplateCreate, PromptTemplateUpdate
 
 template_repo = PromptTemplateRepository()
 task_repo = TaskRepository()
+job_repo = JobRepository()
 
 
 def list_templates(db: Session):
@@ -32,9 +34,18 @@ def update_template(db: Session, template_id: int, payload: PromptTemplateUpdate
         conflict = template_repo.get_by_name(db, data["name"])
         if conflict and conflict.id != entity.id:
             raise ValueError("提示词名称已存在")
+    target_type = data.get("template_type", getattr(entity, "template_type", "regular") or "regular")
+    data["image_split_enabled"] = False
+    data["image_split_prompt"] = None
     updated = template_repo.update(db, entity=entity, obj_in=data)
-    if "content" in data:
+    if "content" in data and target_type == "regular":
         task_repo.sync_prompt_template(db, template_id, updated.content)
+    if target_type == "image" and "content" in data:
+        job_repo.sync_image_prompt_template(
+            db,
+            template_id,
+            content=updated.content,
+        )
     return updated
 
 
@@ -43,4 +54,5 @@ def delete_template(db: Session, template_id: int) -> None:
     if not entity:
         raise ValueError("提示词不存在")
     task_repo.clear_prompt_template(db, template_id)
+    job_repo.clear_image_prompt_template(db, template_id)
     template_repo.delete(db, entity=entity)

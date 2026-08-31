@@ -166,6 +166,7 @@ def _to_schema(execution) -> ExecutionOut:
                     "exported_files": exported_files,
                     "disk_io": _latest_disk_io(execution),
                     "topic_card_meta": _topic_card_meta(execution),
+                    "image_card_meta": _image_card_meta(execution),
                 }
             )
     finally:
@@ -300,6 +301,83 @@ def _topic_card_meta(execution) -> Optional[Dict[str, Any]]:
         "话题数量": len(cards),
         "话题列表": [_topic_card_item(card) for card in cards if isinstance(card, dict)],
         "推送记录": [_topic_delivery_item(item) for item in deliveries if isinstance(item, dict)],
+    }
+
+
+def _image_card_meta(execution) -> Optional[Dict[str, Any]]:
+    if not execution.raw_response:
+        return None
+    data = _safe_loads(execution.raw_response)
+    if data.get("type") != "image_card":
+        return None
+
+    deliveries = data.get("deliveries") if isinstance(data.get("deliveries"), list) else []
+    images = [_image_card_item(item, data.get("size")) for item in deliveries if isinstance(item, dict)]
+    expected_count = int(data.get("block_count") or len(images) or 0)
+    generated_count = sum(1 for item in images if item.get("生成状态") == "成功")
+    if generated_count == expected_count and expected_count > 0 and not data.get("generation_error"):
+        generation_status = "成功"
+    elif generated_count > 0:
+        generation_status = "部分成功"
+    else:
+        generation_status = "失败"
+
+    push_records = [record for item in images for record in item.get("推送记录", [])]
+    push_success_count = sum(1 for item in push_records if item.get("状态") == "成功")
+    if not push_records:
+        push_status = "未执行"
+    elif push_success_count == len(push_records):
+        push_status = "成功"
+    elif push_success_count > 0:
+        push_status = "部分失败"
+    else:
+        push_status = "失败"
+
+    request_params = data.get("request_params") if isinstance(data.get("request_params"), dict) else {}
+    return {
+        "图片模型": str(data.get("image_model_name") or request_params.get("model") or "-"),
+        "内容块数量": expected_count,
+        "请求比例": str(data.get("aspect_ratio") or "auto"),
+        "分辨率档位": str(data.get("resolution") or "auto").upper(),
+        "请求尺寸": str(data.get("size") or request_params.get("size") or "auto"),
+        "请求参数": {
+            "model": request_params.get("model") or data.get("image_model_name") or "-",
+            "n": request_params.get("n") or 1,
+            "size": request_params.get("size") or data.get("size") or "auto",
+            "output_format": request_params.get("output_format") or "png",
+        },
+        "生成状态": generation_status,
+        "生成成功数": generated_count,
+        "推送状态": push_status,
+        "推送成功数": push_success_count,
+        "推送总数": len(push_records),
+        "图片列表": images,
+    }
+
+
+def _image_card_item(item: Dict[str, Any], fallback_size: Any) -> Dict[str, Any]:
+    requested_size = str(item.get("requested_size") or fallback_size or "auto")
+    actual_size = item.get("actual_size")
+    if not actual_size and item.get("actual_width") and item.get("actual_height"):
+        actual_size = f"{item['actual_width']}x{item['actual_height']}"
+    webhooks = item.get("webhooks") if isinstance(item.get("webhooks"), list) else []
+    return {
+        "序号": item.get("image_index"),
+        "生成状态": _DELIVERY_STATUS_LABELS.get(str(item.get("status") or "success"), str(item.get("status") or "-")),
+        "请求尺寸": requested_size,
+        "实际尺寸": str(actual_size) if actual_size else "-",
+        "文件大小": _format_bytes(item.get("size_bytes")),
+        "错误信息": item.get("error"),
+        "推送记录": [
+            {
+                "推送渠道": webhook.get("webhook_name") or f"Webhook {webhook.get('webhook_id') or '-'}",
+                "状态": _DELIVERY_STATUS_LABELS.get(str(webhook.get("status") or ""), str(webhook.get("status") or "-")),
+                "图片标识": webhook.get("image_key"),
+                "错误信息": webhook.get("error"),
+            }
+            for webhook in webhooks
+            if isinstance(webhook, dict)
+        ],
     }
 
 

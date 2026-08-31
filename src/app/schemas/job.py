@@ -9,6 +9,8 @@ from .base import ORMBase
 
 TopicTextLayout = Literal["per_topic", "merged", "auto"]
 TopicImageLayout = Literal["single", "collection", "auto"]
+ImageAspectRatio = Literal["auto", "1:1", "3:2", "2:3", "9:16"]
+ImageResolution = Literal["auto", "1k", "2k", "4k"]
 
 
 class JobBase(BaseModel):
@@ -82,6 +84,12 @@ class JobBase(BaseModel):
     topic_image_merge_threshold: int = Field(default=3, ge=1, le=20)
     topic_image_backup_enabled: bool = False
     topic_image_backup_path: Optional[str] = None
+    image_prompt_template_id: Optional[int] = Field(default=None, ge=1)
+    image_split_enabled: bool = True
+    image_split_prompt: Optional[str] = None
+    image_aspect_ratio: ImageAspectRatio = "auto"
+    image_resolution: ImageResolution = "auto"
+    max_image_count: int = Field(default=6, ge=1, le=20)
 
     @model_validator(mode="after")
     def validate_job(cls, values: "JobBase"):
@@ -210,6 +218,12 @@ class JobUpdate(BaseModel):
     topic_image_merge_threshold: Optional[int] = Field(default=None, ge=1, le=20)
     topic_image_backup_enabled: Optional[bool] = None
     topic_image_backup_path: Optional[str] = None
+    image_prompt_template_id: Optional[int] = Field(default=None, ge=1)
+    image_split_enabled: Optional[bool] = None
+    image_split_prompt: Optional[str] = None
+    image_aspect_ratio: Optional[ImageAspectRatio] = None
+    image_resolution: Optional[ImageResolution] = None
+    max_image_count: Optional[int] = Field(default=None, ge=1, le=20)
 
     @model_validator(mode="after")
     def validate_job(cls, values: "JobUpdate"):
@@ -315,6 +329,13 @@ class JobOut(ORMBase):
     topic_image_merge_threshold: int
     topic_image_backup_enabled: bool
     topic_image_backup_path: Optional[str]
+    image_prompt_template_id: Optional[int] = None
+    image_prompt: Optional[str] = None
+    image_split_enabled: bool = False
+    image_split_prompt: Optional[str] = None
+    image_aspect_ratio: ImageAspectRatio = "auto"
+    image_resolution: ImageResolution = "auto"
+    max_image_count: int = 6
 
 
 class JobReorderPayload(BaseModel):

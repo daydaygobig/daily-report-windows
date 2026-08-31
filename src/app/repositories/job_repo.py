@@ -1,7 +1,7 @@
 """Repository for jobs."""
 from typing import List, Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlalchemy.orm import Session
 
 from ..models.job import Job
@@ -52,3 +52,23 @@ class JobRepository(CRUDRepository[Job]):
     def get_max_display_order(self, db: Session, task_id: int) -> int:
         value = db.query(func.max(Job.display_order)).filter(Job.task_id == task_id).scalar()
         return int(value) if value is not None else -1
+
+    def sync_image_prompt_template(
+        self,
+        db: Session,
+        template_id: int,
+        *,
+        content: str,
+    ) -> None:
+        db.execute(
+            update(Job)
+            .where(Job.image_prompt_template_id == template_id)
+            .values(image_prompt=content)
+        )
+
+    def clear_image_prompt_template(self, db: Session, template_id: int) -> None:
+        db.execute(
+            update(Job)
+            .where(Job.image_prompt_template_id == template_id)
+            .values(image_prompt_template_id=None)
+        )

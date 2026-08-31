@@ -12,10 +12,11 @@ from ..repositories.job_repo import JobRepository
 from ..repositories.model_repo import ModelRepository
 from ..repositories.prompt_template_repo import PromptTemplateRepository
 from ..repositories.task_repo import TaskRepository
+from ..repositories.webhook_repo import WebhookRepository
 from ..schemas.job import JobCreate, JobOut, JobUpdate
 from ..schemas.task import TaskCreate, TaskOut, TaskUpdate
 from ..utils.converters import job_to_dict, task_to_dict
-from . import topic_card_service
+from . import image_card_service, topic_card_service
 
 
 task_repo = TaskRepository()
@@ -24,6 +25,7 @@ github_config_repo = GithubConfigRepository()
 template_repo = PromptTemplateRepository()
 ima_account_repo = ImaAccountRepository()
 model_repo = ModelRepository()
+webhook_repo = WebhookRepository()
 
 
 def _sorted_jobs(task: Task) -> List[Job]:
@@ -54,6 +56,7 @@ def create_task(db: Session, payload: TaskCreate) -> Task:
         data["system_prompt_custom_enabled"] = False
         data["system_prompt_template"] = None
         data["system_prompt_include_message_count"] = False
+        data.update(_image_task_fields(db, data, target_type="export"))
     else:
         data["model_sequence"] = _normalize_model_sequence(
             db,
@@ -68,6 +71,7 @@ def create_task(db: Session, payload: TaskCreate) -> Task:
         )
         data["prompt"] = resolved_prompt
         data["prompt_template_id"] = template_id
+        data.update(_image_task_fields(db, data, target_type=payload.task_type))
     return task_repo.create_task(db, obj_in=data)
 
 
@@ -105,6 +109,9 @@ def update_task(db: Session, task_id: int, payload: TaskUpdate) -> Task:
             )
             obj_in["prompt"] = resolved_prompt
             obj_in["prompt_template_id"] = template_id
+    effective = task_to_dict(entity)
+    effective.update(obj_in)
+    obj_in.update(_image_task_fields(db, effective, target_type=target_type))
     return task_repo.update_task(db, entity=entity, obj_in=obj_in)
 
 
@@ -147,11 +154,113 @@ def _normalize_model_sequence(
     if not normalized and fallback_model_id:
         normalized = [{"model_id": int(fallback_model_id), "max_attempts": 2}]
     if not normalized:
-        raise ValueError("日报和话题卡片任务至少需要配置一个模型")
+        raise ValueError("模型任务至少需要配置一个文本模型")
     for item in normalized:
-        if not model_repo.get(db, item["model_id"]):
+        model = model_repo.get(db, item["model_id"])
+        if not model:
             raise ValueError(f"模型不存在：{item['model_id']}")
+        if (getattr(model, "model_type", "text") or "text") != "text":
+            raise ValueError(f"模型不是文本模型：{item['model_id']}")
     return normalized
+
+
+def _image_task_fields(db: Session, effective: dict, *, target_type: str) -> dict:
+    template_id = effective.get("prompt_template_id")
+    if template_id:
+        template = template_repo.get(db, int(template_id))
+        if not template:
+            raise ValueError("提示词模板不存在")
+        if (getattr(template, "template_type", "regular") or "regular") != "regular":
+            raise ValueError("任务只能使用常规提示词模板")
+
+    if target_type != "image_card":
+        return {
+            "image_model_id": None,
+            "image_split_enabled": False,
+            "image_split_prompt": None,
+        }
+
+    image_model_id = effective.get("image_model_id")
+    if not image_model_id:
+        raise ValueError("图片卡片任务需要选择图片模型")
+    image_model = model_repo.get(db, int(image_model_id))
+    if not image_model:
+        raise ValueError("图片模型不存在")
+    if (getattr(image_model, "model_type", "text") or "text") != "image":
+        raise ValueError("所选模型不是图片模型")
+
+    push_ids = [int(value) for value in (effective.get("push_webhook_ids") or []) if value]
+    if not push_ids:
+        raise ValueError("图片卡片任务至少需要选择一个推送 Webhook")
+    webhooks = webhook_repo.get_by_ids(db, push_ids)
+    if len(webhooks) != len(set(push_ids)):
+        raise ValueError("推送 Webhook 不存在")
+    for webhook in webhooks:
+        if not (getattr(webhook, "feishu_app_id", None) or "").strip() or not getattr(
+            webhook, "feishu_app_secret_cipher", None
+        ):
+            raise ValueError(f"Webhook「{webhook.name}」未配置飞书应用 App ID / App Secret")
+
+    return {
+        "image_model_id": int(image_model_id),
+        "image_split_enabled": False,
+        "image_split_prompt": None,
+    }
+
+
+def _apply_image_card_job_settings(
+    db: Session,
+    task: Task,
+    obj_in: dict,
+    *,
+    existing_job: Job | None = None,
+) -> dict:
+    if getattr(task, "task_type", "report") != "image_card":
+        obj_in.update(
+            {
+                "image_prompt_template_id": None,
+                "image_prompt": None,
+                "image_split_enabled": False,
+                "image_split_prompt": None,
+            }
+        )
+        return obj_in
+
+    template_id = obj_in.get("image_prompt_template_id")
+    if not template_id and existing_job is not None:
+        template_id = getattr(existing_job, "image_prompt_template_id", None)
+        if not template_id and (getattr(existing_job, "image_prompt", None) or "").strip():
+            return obj_in
+    if not template_id:
+        raise ValueError("图片卡片作业需要选择图片提示词模板")
+
+    template = template_repo.get(db, int(template_id))
+    if not template:
+        raise ValueError("图片提示词模板不存在")
+    if (getattr(template, "template_type", "regular") or "regular") != "image":
+        raise ValueError("图片卡片作业只能使用图片提示词模板")
+
+    if "image_split_enabled" in obj_in:
+        split_enabled = bool(obj_in.get("image_split_enabled"))
+    elif existing_job is not None:
+        split_enabled = bool(getattr(existing_job, "image_split_enabled", False))
+    else:
+        split_enabled = True
+    split_prompt = obj_in.get("image_split_prompt")
+    if "image_split_prompt" not in obj_in and existing_job is not None:
+        split_prompt = getattr(existing_job, "image_split_prompt", None)
+    obj_in.update(
+        {
+            "image_prompt_template_id": int(template_id),
+            "image_prompt": template.content,
+            "image_split_enabled": split_enabled,
+            "image_split_prompt": image_card_service.normalize_split_prompt(
+                split_enabled,
+                split_prompt,
+            ),
+        }
+    )
+    return obj_in
 
 
 def create_job(db: Session, task_id: int, payload: JobCreate) -> Job:
@@ -168,6 +277,7 @@ def create_job(db: Session, task_id: int, payload: JobCreate) -> Job:
     obj = _apply_job_feature_settings(obj, is_update=False)
     obj = _apply_message_stats_github_settings(db, obj_in=obj, is_update=False)
     obj = _apply_ima_account_settings(db, obj_in=obj, is_update=False)
+    obj = _apply_image_card_job_settings(db, task, obj)
     return job_repo.create_job(db, obj_in=obj)
 
 
@@ -175,6 +285,9 @@ def update_job(db: Session, job_id: int, payload: JobUpdate) -> Job:
     entity = job_repo.get_by_id(db, job_id)
     if not entity:
         raise ValueError("作业不存在")
+    task = task_repo.get(db, entity.task_id)
+    if not task:
+        raise ValueError("任务不存在")
     obj_in = {k: v for k, v in payload.model_dump().items() if v is not None}
     obj_in = _apply_github_settings(db, obj_in=obj_in, existing_config_id=entity.github_config_id, is_update=True)
     obj_in = _apply_job_feature_settings(obj_in, is_update=True)
@@ -190,6 +303,7 @@ def update_job(db: Session, job_id: int, payload: JobUpdate) -> Job:
         existing_account_id=entity.ima_account_id,
         is_update=True,
     )
+    obj_in = _apply_image_card_job_settings(db, task, obj_in, existing_job=entity)
     return job_repo.update_job(db, entity=entity, obj_in=obj_in)
 
 
@@ -354,6 +468,9 @@ def _apply_job_feature_settings(obj_in: dict, *, is_update: bool) -> dict:
     ensure_default("topic_image_merge_threshold", 3)
     ensure_default("topic_image_backup_enabled", False)
     ensure_default("topic_image_backup_path", None)
+    ensure_default("image_aspect_ratio", "auto")
+    ensure_default("image_resolution", "auto")
+    ensure_default("max_image_count", 6)
     ensure_default("disk_alert_enabled", False)
     ensure_default("disk_alert_threshold_bytes", 100 * 1024 * 1024)
 
@@ -371,6 +488,7 @@ def _apply_job_feature_settings(obj_in: dict, *, is_update: bool) -> dict:
         "weekly_end_day",
         "topic_text_merge_threshold",
         "topic_image_merge_threshold",
+        "max_image_count",
     ):
         if key in obj_in and obj_in[key] is not None:
             try:

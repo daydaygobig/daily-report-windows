@@ -8,7 +8,7 @@ from .base import ORMBase
 from .job import JobOut
 
 
-TaskType = Literal["report", "export", "topic_card"]
+TaskType = Literal["report", "export", "topic_card", "image_card"]
 TopicStyleConfig = Dict[str, Dict[str, str]]
 
 DEFAULT_TOPIC_STYLE_CONFIG: TopicStyleConfig = {
@@ -29,6 +29,7 @@ class TaskCreate(BaseModel):
     task_type: TaskType = "report"
     prompt: str = ""
     model_id: Optional[int] = None
+    image_model_id: Optional[int] = None
     model_sequence: Optional[List[TaskModelConfig]] = None
     prompt_template_id: Optional[int] = None
     talkers: List[str] = Field(default_factory=list)
@@ -51,6 +52,7 @@ class TaskUpdate(BaseModel):
     task_type: Optional[TaskType] = None
     prompt: Optional[str] = None
     model_id: Optional[int] = None
+    image_model_id: Optional[int] = None
     model_sequence: Optional[List[TaskModelConfig]] = None
     prompt_template_id: Optional[int] = None
     talkers: Optional[List[str]] = None
@@ -71,6 +73,7 @@ class TaskOut(ORMBase):
     task_type: TaskType = "report"
     prompt: str
     model_id: Optional[int]
+    image_model_id: Optional[int]
     model_sequence: List[TaskModelConfig] = Field(default_factory=list)
     prompt_template_id: Optional[int]
     talkers: List[str]

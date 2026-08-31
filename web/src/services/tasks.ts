@@ -87,6 +87,13 @@ export type Job = {
   topic_image_merge_threshold: number;
   topic_image_backup_enabled: boolean;
   topic_image_backup_path?: string;
+  image_prompt_template_id?: number | null;
+  image_prompt?: string | null;
+  image_split_enabled: boolean;
+  image_split_prompt?: string | null;
+  image_aspect_ratio: "auto" | "1:1" | "3:2" | "2:3" | "9:16";
+  image_resolution: "auto" | "1k" | "2k" | "4k";
+  max_image_count: number;
 };
 
 export type TopicTypeKey = "industry_business" | "work_methods" | "career_growth" | "mind_wellbeing";
@@ -99,9 +106,10 @@ export type Task = {
   created_at: string;
   updated_at: string;
   name: string;
-  task_type: "report" | "export" | "topic_card";
+  task_type: "report" | "export" | "topic_card" | "image_card";
   prompt: string;
   model_id?: number | null;
+  image_model_id?: number | null;
   model_sequence?: TaskModelConfig[];
   prompt_template_id?: number | null;
   talkers: string[];
@@ -124,9 +132,10 @@ export type TaskModelConfig = {
 
 export type TaskPayload = {
   name: string;
-  task_type: "report" | "export" | "topic_card";
+  task_type: "report" | "export" | "topic_card" | "image_card";
   prompt: string;
   model_id?: number | null;
+  image_model_id?: number | null;
   model_sequence?: TaskModelConfig[] | null;
   prompt_template_id?: number | null;
   talkers: string[];
@@ -217,6 +226,12 @@ export type JobPayload = {
   topic_image_merge_threshold: number;
   topic_image_backup_enabled: boolean;
   topic_image_backup_path?: string;
+  image_prompt_template_id?: number | null;
+  image_split_enabled: boolean;
+  image_split_prompt?: string | null;
+  image_aspect_ratio: "auto" | "1:1" | "3:2" | "2:3" | "9:16";
+  image_resolution: "auto" | "1k" | "2k" | "4k";
+  max_image_count: number;
 };
 
 export type JobUpdatePayload = Partial<JobPayload>;
