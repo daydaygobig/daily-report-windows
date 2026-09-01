@@ -3,7 +3,6 @@
 DEFAULT_PROMPT_TEMPLATES = (
     {
         "name": "职场案例聊天总结（默认）",
-        "legacy_name": "职场案例聊天总结（测试）",
         "template_type": "regular",
         "description": "从群聊中提炼匿名职场案例，输出结构化 Markdown。",
         "content": """你是一名严谨的职场案例编辑。请从群聊记录中提炼真正值得复盘的职场案例，而不是机械罗列聊天话题。
@@ -45,7 +44,6 @@ DEFAULT_PROMPT_TEMPLATES = (
     },
     {
         "name": "职场案例手绘长图（默认）",
-        "legacy_name": "职场案例手绘长图（测试）",
         "template_type": "image",
         "description": "一案一图；暖白纸张、手绘线稿、七段式长图，每张强制包含人物关系图。",
         "content": """【结构参考示例｜只学习结构与信息密度，不要把示例内容当成本次案例】

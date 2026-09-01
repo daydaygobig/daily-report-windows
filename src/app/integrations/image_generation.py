@@ -148,8 +148,13 @@ async def generate_image(
     encoded = item.get("b64_json")
     if not isinstance(encoded, str) or not encoded.strip():
         if item.get("url"):
+            if payload.get("response_format") == "b64_json":
+                raise ImageGenerationError(
+                    "已要求代理返回 b64_json，但接口仍只返回图片 URL；"
+                    "请确认该代理支持 response_format 参数"
+                )
             raise ImageGenerationError(
-                "图片模型只返回了图片 URL；请在高级配置中让接口返回 b64_json"
+                "图片模型只返回了图片 URL；请在模型配置中开启“兼容代理接口”后重试"
             )
         raise ImageGenerationError("图片模型没有返回 b64_json 图片数据")
     mime_type = "image/png"

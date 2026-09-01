@@ -487,7 +487,7 @@ def _backfill_image_card_job_templates(engine: Engine) -> None:
 
 
 def _ensure_default_prompt_templates(engine: Engine) -> None:
-    """Seed reference templates once, without overwriting user edits."""
+    """Insert missing built-in templates without renaming or overwriting user data."""
 
     with engine.begin() as conn:
         for template in DEFAULT_PROMPT_TEMPLATES:
@@ -496,16 +496,6 @@ def _ensure_default_prompt_templates(engine: Engine) -> None:
                 {"name": template["name"]},
             ).first()
             if existing:
-                continue
-            legacy = conn.execute(
-                text("SELECT id FROM prompt_templates WHERE name = :name LIMIT 1"),
-                {"name": template["legacy_name"]},
-            ).first()
-            if legacy:
-                conn.execute(
-                    text("UPDATE prompt_templates SET name = :name, updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
-                    {"name": template["name"], "id": legacy[0]},
-                )
                 continue
             conn.execute(
                 text(

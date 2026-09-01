@@ -315,7 +315,10 @@ def _image_card_meta(execution) -> Optional[Dict[str, Any]]:
     images = [_image_card_item(item, data.get("size")) for item in deliveries if isinstance(item, dict)]
     expected_count = int(data.get("block_count") or len(images) or 0)
     generated_count = sum(1 for item in images if item.get("生成状态") == "成功")
-    if generated_count == expected_count and expected_count > 0 and not data.get("generation_error"):
+    skipped = data.get("skipped") == "no_image_content"
+    if skipped:
+        generation_status = "已跳过"
+    elif generated_count == expected_count and expected_count > 0 and not data.get("generation_error"):
         generation_status = "成功"
     elif generated_count > 0:
         generation_status = "部分成功"
@@ -334,7 +337,7 @@ def _image_card_meta(execution) -> Optional[Dict[str, Any]]:
         push_status = "失败"
 
     request_params = data.get("request_params") if isinstance(data.get("request_params"), dict) else {}
-    return {
+    result = {
         "图片模型": str(data.get("image_model_name") or request_params.get("model") or "-"),
         "内容块数量": expected_count,
         "请求比例": str(data.get("aspect_ratio") or "auto"),
@@ -353,6 +356,9 @@ def _image_card_meta(execution) -> Optional[Dict[str, Any]]:
         "推送总数": len(push_records),
         "图片列表": images,
     }
+    if skipped:
+        result["跳过原因"] = str(data.get("skip_reason") or "本次没有符合条件的生图内容")
+    return result
 
 
 def _image_card_item(item: Dict[str, Any], fallback_size: Any) -> Dict[str, Any]:

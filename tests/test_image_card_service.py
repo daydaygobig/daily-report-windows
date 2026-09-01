@@ -1,9 +1,12 @@
+import json
 from types import SimpleNamespace
 
 import pytest
 
+from app.scheduler import service as scheduler_module
 from app.scheduler.service import SchedulerService
 from app.services import image_card_service
+from app.services.execution_service import _image_card_meta
 
 
 def test_split_blocks_from_fixed_markers():
@@ -34,6 +37,54 @@ def test_whole_markdown_is_one_image_when_split_disabled():
         content,
         split_enabled=False,
     ) == [content]
+
+
+@pytest.mark.parametrize("split_enabled", [False, True])
+@pytest.mark.parametrize(
+    "content",
+    [
+        image_card_service.NO_IMAGE_CONTENT,
+        image_card_service.NO_IMAGE_CONTENT_NOTICE,
+        "【本时段无职场话题讨论】",
+    ],
+)
+def test_no_image_content_marker_skips_the_whole_image_run(split_enabled, content):
+    assert image_card_service.parse_content_blocks(
+        content,
+        split_enabled=split_enabled,
+    ) == []
+
+
+def test_no_image_content_marker_cannot_be_used_inside_a_content_block():
+    content = (
+        f"{image_card_service.BLOCK_START}\n"
+        f"{image_card_service.NO_IMAGE_CONTENT}\n"
+        f"{image_card_service.BLOCK_END}"
+    )
+
+    with pytest.raises(ValueError, match="完整返回内容单独输出"):
+        image_card_service.parse_content_blocks(content, split_enabled=True)
+
+
+def test_image_execution_meta_reports_no_content_as_skipped():
+    execution = SimpleNamespace(
+        raw_response=json.dumps(
+            {
+                "type": "image_card",
+                "block_count": 0,
+                "skipped": "no_image_content",
+                "skip_reason": "文本模型判定本次没有符合条件的生图内容",
+                "deliveries": [],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    meta = _image_card_meta(execution)
+
+    assert meta["生成状态"] == "已跳过"
+    assert meta["推送状态"] == "未执行"
+    assert meta["跳过原因"] == "文本模型判定本次没有符合条件的生图内容"
 
 
 def test_split_prompt_requires_both_parameters():
@@ -125,6 +176,24 @@ def test_scheduler_uses_job_split_rule_for_text_intermediate():
 
     assert image_card_service.BLOCK_START in instruction
     assert image_card_service.BLOCK_END in instruction
+    assert image_card_service.NO_IMAGE_CONTENT in instruction
+
+
+def test_scheduler_always_adds_no_image_rule_when_split_is_disabled():
+    service = SchedulerService()
+    task = SimpleNamespace(task_type="image_card", system_prompt_custom_enabled=False)
+    job = SimpleNamespace(image_split_enabled=False)
+
+    instruction = service._build_system_instruction(
+        task,
+        job,
+        ["测试群"],
+        {"time_str": "2026-08-31 00:00 ~ 23:59"},
+        None,
+    )
+
+    assert image_card_service.NO_IMAGE_CONTENT in instruction
+    assert "不得把它放进单个内容块" in instruction
 
 
 def test_scheduler_validates_blocks_using_job_settings():
@@ -141,6 +210,12 @@ def test_scheduler_validates_blocks_using_job_settings():
         summary=summary,
         html_required=False,
     )
+    service._validate_ai_output(
+        task=task,
+        job=job,
+        summary=image_card_service.NO_IMAGE_CONTENT,
+        html_required=False,
+    )
 
     with pytest.raises(ValueError, match="没有找到图片内容"):
         service._validate_ai_output(
@@ -149,3 +224,38 @@ def test_scheduler_validates_blocks_using_job_settings():
             summary="# 未分块内容",
             html_required=False,
         )
+
+
+@pytest.mark.asyncio
+async def test_scheduler_skips_image_dependencies_for_no_image_content(monkeypatch):
+    service = SchedulerService()
+    model_output = "本时段无职场话题讨论"
+    execution = SimpleNamespace(raw_response=None, summary_md=model_output)
+    webhook = SimpleNamespace(id=2, name="通知群")
+    sent_messages = []
+
+    monkeypatch.setattr(scheduler_module.webhook_repo, "get_by_ids", lambda db, ids: [webhook])
+
+    async def fake_push_feishu(**kwargs):
+        sent_messages.append(kwargs)
+        return True
+
+    monkeypatch.setattr(service, "_push_feishu", fake_push_feishu)
+
+    await service._handle_image_card_result(
+        db=SimpleNamespace(),
+        task=SimpleNamespace(id=1, push_webhook_ids="[2]"),
+        job=SimpleNamespace(id=2, image_split_enabled=True, max_image_count=6),
+        execution=execution,
+        raw_response=model_output,
+    )
+
+    meta = json.loads(execution.raw_response)
+    assert meta["block_count"] == 0
+    assert meta["skipped"] == "no_image_content"
+    assert meta["model_output"] == model_output
+    assert meta["notice"] == image_card_service.NO_IMAGE_CONTENT_NOTICE
+    assert meta["notice_pushed"] is True
+    assert meta["deliveries"] == []
+    assert execution.summary_md == image_card_service.NO_IMAGE_CONTENT_NOTICE
+    assert sent_messages[0]["summary"] == image_card_service.NO_IMAGE_CONTENT_NOTICE

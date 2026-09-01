@@ -6,6 +6,16 @@ BLOCK_START = "<!-- CONTENT_BLOCK_START -->"
 BLOCK_END = "<!-- CONTENT_BLOCK_END -->"
 BLOCK_START_PARAM = "${block_start}"
 BLOCK_END_PARAM = "${block_end}"
+NO_IMAGE_CONTENT = "<!-- NO_IMAGE_CONTENT -->"
+NO_IMAGE_CONTENT_NOTICE = "本时段无职场话题讨论"
+NO_IMAGE_CONTENT_ALIASES = {
+    NO_IMAGE_CONTENT,
+    NO_IMAGE_CONTENT_NOTICE,
+    "【本时段无职场话题讨论】",
+}
+NO_IMAGE_CONTENT_INSTRUCTION = f"""如果本次聊天记录中没有任何符合当前任务要求、值得生成图片的内容，只输出一行：
+{NO_IMAGE_CONTENT}
+该标记表示本次整体无需生图，不得把它放进单个内容块，也不得同时输出其他正文或内容块标记。"""
 
 DEFAULT_IMAGE_SPLIT_PROMPT = """请将最终结果拆分成一个或多个独立内容块，每个内容块对应一张图片。
 
@@ -117,6 +127,10 @@ def parse_content_blocks(
     text = (content or "").strip()
     if not text:
         raise ValueError("模型返回内容为空")
+    if text in NO_IMAGE_CONTENT_ALIASES:
+        return []
+    if NO_IMAGE_CONTENT in text:
+        raise ValueError("无需生图标记必须作为本次完整返回内容单独输出")
     if not split_enabled:
         blocks = [text]
     else:

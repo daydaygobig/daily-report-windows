@@ -64,6 +64,7 @@ async def test_generate_image_decodes_b64(monkeypatch):
                 "n": 8,
                 "size": "4096x4096",
                 "output_format": "webp",
+                "response_format": "b64_json",
                 "provider_option": True,
             }
         },
@@ -78,6 +79,7 @@ async def test_generate_image_decodes_b64(monkeypatch):
     assert request_json["size"] == "1024x1024"
     assert request_json["quality"] == "low"
     assert request_json["output_format"] == "png"
+    assert request_json["response_format"] == "b64_json"
     assert request_json["provider_option"] is True
 
 
@@ -96,3 +98,29 @@ async def test_generate_image_rejects_url_only_response(monkeypatch):
 
     with pytest.raises(image_generation.ImageGenerationError, match="只返回了图片 URL"):
         await image_generation.generate_image(model, prompt="test")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_generate_image_uses_official_default_without_response_format(monkeypatch):
+    endpoint = "https://example.com/v1/images/generations"
+    image_bytes = b"small-png"
+    route = respx.post(endpoint).mock(
+        return_value=Response(
+            200,
+            json={"data": [{"b64_json": base64.b64encode(image_bytes).decode()}]},
+        )
+    )
+    monkeypatch.setattr(image_generation, "decrypt_value", lambda _: "secret")
+    model = SimpleNamespace(
+        provider="gpt-image-2",
+        base_url=endpoint,
+        api_key_cipher="encrypted",
+        extra=None,
+    )
+
+    result = await image_generation.generate_image(model, prompt="test")
+
+    assert result.content == image_bytes
+    request_json = json.loads(route.calls.last.request.content.decode())
+    assert "response_format" not in request_json

@@ -1327,10 +1327,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
                     content={
                       <div style={{ width: 460, maxWidth: "70vw", userSelect: "text", cursor: "text" }}>
                         <Typography.Paragraph style={{ marginBottom: 8 }}>
-                          这段规则会作为附加系统提示词发给文本模型，要求它为每个独立内容添加开始和结束标识。系统根据标识识别内容块数量，再逐块生成图片。
-                        </Typography.Paragraph>
-                        <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                          这是给文本模型看的规则，不需要在这里粘贴待处理内容或 Markdown。下面两个只是边界参数；运行时，AI 会在两个标识之间生成一个内容块的完整正文。
+                          该规则用于拆分内容并逐块生图，无符合内容时跳过生图。
                         </Typography.Paragraph>
                         <pre
                           style={{
@@ -1343,7 +1340,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
                           }}
                         >{`${"${block_start}"}\n${"${block_end}"}`}</pre>
                         <Typography.Text type="secondary">
-                          自定义规则时请保留这两个参数，其他说明文字可以按需要修改。
+                          前者标记内容开始，中间为AI生成的话题内容，后者标记内容结束，自定义时必须保留。
                         </Typography.Text>
                       </div>
                     }

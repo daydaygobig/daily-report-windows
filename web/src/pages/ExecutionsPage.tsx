@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { ReloadOutlined } from "@ant-design/icons";
 import { Button, DatePicker, Form, InputNumber, message, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
 import { Resizable } from "react-resizable";
 import type { ColumnsType } from "antd/es/table";
@@ -34,10 +35,14 @@ function ExecutionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
 
-  const taskQuery = useQuery({ queryKey: ["tasks", "options"], queryFn: fetchTasks, staleTime: 60_000 });
+  const taskQuery = useQuery({
+    queryKey: ["tasks", "options"],
+    queryFn: fetchTasks,
+    refetchOnMount: "always"
+  });
   const taskIdWatch = Form.useWatch("task_id", form);
 
-  const { data, isLoading, isFetching, isError, error } = useQuery({
+  const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
     queryKey: ["executions", page, pageSize, filters],
     queryFn: () =>
       fetchExecutions({
@@ -49,7 +54,8 @@ function ExecutionsPage() {
         status: filters.status,
         start_time: filters.startTime,
         end_time: filters.endTime
-      })
+      }),
+    refetchOnMount: "always"
   });
 
   const executionPage: ExecutionPage | undefined = data;
@@ -213,7 +219,7 @@ const renderParagraphCell = (value?: string | null) => {
   );
 };
 
-const handleSearch = () => {
+  const handleSearch = () => {
     const values = form.getFieldsValue(true);
     const toPositiveInt = (value: unknown): number | undefined => {
       if (value === undefined || value === null || value === "") {
@@ -234,14 +240,24 @@ const handleSearch = () => {
       startTime: range?.[0]?.format(TIME_FORMAT),
       endTime: range?.[1]?.format(TIME_FORMAT)
     };
+    if (page === 1 && JSON.stringify(nextFilters) === JSON.stringify(filters)) {
+      void refetch();
+    }
     setFilters(nextFilters);
     setPage(1);
   };
 
   const handleReset = () => {
     form.resetFields();
+    if (page === 1 && Object.keys(filters).length === 0) {
+      void refetch();
+    }
     setFilters({});
     setPage(1);
+  };
+
+  const handleRefresh = () => {
+    void Promise.all([taskQuery.refetch(), refetch()]);
   };
 
   type ExecutionColumn = ColumnsType<Execution>[number] & { key: string; width?: number };
@@ -506,6 +522,14 @@ const defaultColumnWidths: Record<string, number> = {
             </Button>
             <Button htmlType="button" onClick={handleReset}>
               重置
+            </Button>
+            <Button
+              icon={<ReloadOutlined />}
+              loading={isFetching || taskQuery.isFetching}
+              htmlType="button"
+              onClick={handleRefresh}
+            >
+              刷新
             </Button>
           </Space>
         </Form.Item>
