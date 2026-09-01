@@ -1,6 +1,9 @@
 from sqlalchemy import create_engine, text
 
-from app.db_migrations import _backfill_image_card_job_templates
+from app.db_migrations import (
+    _backfill_image_card_job_templates,
+    _ensure_default_prompt_templates,
+)
 
 
 def test_backfill_moves_legacy_image_template_to_job(tmp_path):
@@ -82,3 +85,49 @@ def test_backfill_moves_legacy_image_template_to_job(tmp_path):
     assert row["image_prompt"] == "手绘长图提示词"
     assert row["image_split_enabled"] == 1
     assert row["image_split_prompt"] == "拆图规则"
+
+
+def test_default_templates_do_not_rename_or_overwrite_existing_rows(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'templates.db'}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE prompt_templates (
+                    id INTEGER PRIMARY KEY,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    name VARCHAR(120) NOT NULL UNIQUE,
+                    content TEXT NOT NULL,
+                    description TEXT,
+                    template_type TEXT NOT NULL,
+                    image_split_enabled INTEGER NOT NULL DEFAULT 0,
+                    image_split_prompt TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO prompt_templates
+                    (created_at, updated_at, name, content, template_type, image_split_enabled)
+                VALUES
+                    (CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '职场案例聊天总结（测试）',
+                     '用户原有内容', 'regular', 0)
+                """
+            )
+        )
+
+    _ensure_default_prompt_templates(engine)
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT name, content FROM prompt_templates ORDER BY id")
+        ).mappings().all()
+
+    assert rows[0] == {"name": "职场案例聊天总结（测试）", "content": "用户原有内容"}
+    assert [row["name"] for row in rows[1:]] == [
+        "职场案例聊天总结（默认）",
+        "职场案例手绘长图（默认）",
+    ]

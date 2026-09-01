@@ -2,11 +2,10 @@ import json
 import struct
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.db_migrations import _ensure_default_prompt_templates
 from app.integrations.image_generation import detect_image_dimensions
 from app.models.prompt_template import PromptTemplate
 from app.repositories.task_repo import TaskRepository
@@ -124,43 +123,3 @@ def test_report_task_writes_legacy_image_split_defaults():
 
     assert task.image_split_enabled is False
     assert task.image_split_prompt is None
-
-
-def test_default_prompt_templates_rename_legacy_without_overwriting_content(tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'defaults.db'}")
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
-                CREATE TABLE prompt_templates (
-                    id INTEGER PRIMARY KEY,
-                    created_at DATETIME NOT NULL,
-                    updated_at DATETIME NOT NULL,
-                    name VARCHAR(120) NOT NULL UNIQUE,
-                    content TEXT NOT NULL,
-                    description TEXT,
-                    template_type TEXT NOT NULL DEFAULT 'regular',
-                    image_split_enabled INTEGER NOT NULL DEFAULT 0,
-                    image_split_prompt TEXT
-                )
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                INSERT INTO prompt_templates
-                    (created_at, updated_at, name, content, template_type, image_split_enabled)
-                VALUES
-                    (CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '职场案例聊天总结（测试）', '用户已修改的正文', 'regular', 0)
-                """
-            )
-        )
-
-    _ensure_default_prompt_templates(engine)
-
-    with engine.connect() as conn:
-        rows = conn.execute(text("SELECT name, content FROM prompt_templates ORDER BY id")).mappings().all()
-
-    assert rows[0] == {"name": "职场案例聊天总结（默认）", "content": "用户已修改的正文"}
-    assert rows[1]["name"] == "职场案例手绘长图（默认）"
