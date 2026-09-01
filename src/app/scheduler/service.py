@@ -1478,11 +1478,15 @@ class SchedulerService:
                 result = template
                 for token, value in replacements.items():
                     result = result.replace(token, value)
-        if getattr(task, "task_type", "report") == "image_card" and bool(
-            getattr(job, "image_split_enabled", False)
-        ):
-            split_prompt = image_card_service.expand_split_prompt(getattr(job, "image_split_prompt", None))
-            result = f"{result.rstrip()}\n\n图片内容拆分规则（必须遵守）：\n{split_prompt}"
+        if getattr(task, "task_type", "report") == "image_card":
+            image_rules: List[str] = []
+            if bool(getattr(job, "image_split_enabled", False)):
+                split_prompt = image_card_service.expand_split_prompt(getattr(job, "image_split_prompt", None))
+                image_rules.append(f"图片内容拆分规则（必须遵守）：\n{split_prompt}")
+            image_rules.append(
+                f"图片卡片空内容规则（必须遵守）：\n{image_card_service.NO_IMAGE_CONTENT_INSTRUCTION}"
+            )
+            result = f"{result.rstrip()}\n\n" + "\n\n".join(image_rules)
         return result or default_prompt
 
     async def _invoke_llm(self, model, prompt: str) -> tuple[str, Optional[int], Optional[int]]:
@@ -1674,6 +1678,34 @@ class SchedulerService:
             split_enabled=bool(getattr(job, "image_split_enabled", False)),
             max_count=max_count,
         )
+        if not blocks:
+            notice = image_card_service.NO_IMAGE_CONTENT_NOTICE
+            execution.summary_md = notice
+            push_webhook_ids = _parse_int_list(task.push_webhook_ids)
+            webhooks = webhook_repo.get_by_ids(db, push_webhook_ids) if push_webhook_ids else []
+            notice_pushed = False
+            if webhooks:
+                notice_pushed = await self._push_feishu(
+                    webhooks=webhooks,
+                    task=task,
+                    job=job,
+                    summary=notice,
+                )
+            execution.raw_response = json.dumps(
+                {
+                    "type": "image_card",
+                    "block_count": 0,
+                    "skipped": "no_image_content",
+                    "skip_reason": "文本模型判定本次没有符合条件的生图内容",
+                    "model_output": raw_response,
+                    "notice": notice,
+                    "notice_pushed": notice_pushed,
+                    "deliveries": [],
+                },
+                ensure_ascii=False,
+            )
+            logger.info("图片卡片无符合条件内容，跳过生图 task={} job={}", task.id, job.id)
+            return
         image_prompt = (getattr(job, "image_prompt", None) or "").strip()
         if not image_prompt:
             raise RuntimeError("图片卡片作业未配置图片提示词模板")
