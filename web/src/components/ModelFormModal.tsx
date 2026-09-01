@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, AutoComplete, Button, Form, Image, Input, InputNumber, Modal, Select, Space, message } from "antd";
+import { Alert, AutoComplete, Button, Form, Image, Input, InputNumber, Modal, Select, Space, Switch, message } from "antd";
 import type { Model, ModelCreatePayload, ModelUpdatePayload } from "../services/models";
 import { fetchRemoteModels, testModelConnection } from "../services/models";
 
@@ -16,6 +16,7 @@ type ModelFormValues = {
   top_p?: number | null;
   max_tokens_param?: MaxTokensParam;
   thinking_level?: ThinkingLevel;
+  force_image_base64?: boolean;
   extra?: string;
   request_standard: "openai" | "gemini" | "anthropic" | "openai_images";
   model_type: "text" | "image";
@@ -45,6 +46,7 @@ const defaultValues: ModelFormValues = {
   top_p: undefined,
   max_tokens_param: "max_tokens",
   thinking_level: "none",
+  force_image_base64: false,
   extra: JSON.stringify(DEFAULT_EXTRA_OBJECT, null, 2),
   request_standard: "openai",
   model_type: "text"
@@ -89,6 +91,27 @@ const extractMaxTokensParam = (extraObj?: Record<string, unknown>): MaxTokensPar
   return "max_tokens";
 };
 
+const extractForceImageBase64 = (extraObj?: Record<string, unknown>): boolean => {
+  const payload =
+    extraObj?.payload && typeof extraObj.payload === "object" && !Array.isArray(extraObj.payload)
+      ? (extraObj.payload as Record<string, unknown>)
+      : undefined;
+  return payload?.response_format === "b64_json";
+};
+
+const removeImageResponseFormat = (extraObj?: Record<string, unknown>) => {
+  if (!extraObj?.payload || typeof extraObj.payload !== "object" || Array.isArray(extraObj.payload)) {
+    return;
+  }
+  const payload = { ...(extraObj.payload as Record<string, unknown>) };
+  delete payload.response_format;
+  if (Object.keys(payload).length > 0) {
+    extraObj.payload = payload;
+  } else {
+    delete extraObj.payload;
+  }
+};
+
 const removeThinkingLevel = (extraObj?: Record<string, unknown>) => {
   if (!extraObj) {
     return;
@@ -128,6 +151,22 @@ const applyFormOptions = (obj: Record<string, unknown>, values: ModelFormValues)
   } else {
     delete obj.thinking_level;
   }
+  if (values.model_type === "image") {
+    const payload =
+      obj.payload && typeof obj.payload === "object" && !Array.isArray(obj.payload)
+        ? { ...(obj.payload as Record<string, unknown>) }
+        : {};
+    if (values.force_image_base64) {
+      payload.response_format = "b64_json";
+    } else {
+      delete payload.response_format;
+    }
+    if (Object.keys(payload).length > 0) {
+      obj.payload = payload;
+    } else {
+      delete obj.payload;
+    }
+  }
 };
 
 const toFormValues = (model: Model): ModelFormValues => {
@@ -137,8 +176,12 @@ const toFormValues = (model: Model): ModelFormValues => {
       : undefined;
   const thinkingLevel = extractThinkingLevel(extraObj);
   const maxTokensParam = extractMaxTokensParam(extraObj);
+  const forceImageBase64 = model.model_type === "image" && extractForceImageBase64(extraObj);
   removeThinkingLevel(extraObj);
   removeMaxTokensParam(extraObj);
+  if (model.model_type === "image") {
+    removeImageResponseFormat(extraObj);
+  }
 
   const extraString =
     extraObj && Object.keys(extraObj).length > 0
@@ -155,6 +198,7 @@ const toFormValues = (model: Model): ModelFormValues => {
     top_p: model.top_p ?? undefined,
     max_tokens_param: maxTokensParam,
     thinking_level: thinkingLevel,
+    force_image_base64: forceImageBase64,
     extra: extraString,
     request_standard:
       (model.request_standard as "openai" | "gemini" | "anthropic" | "openai_images") ?? "openai",
@@ -580,13 +624,24 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
             ]}
           />
         </Form.Item></> : (
-          <Alert
-            type="info"
-            showIcon
-            style={{ marginBottom: 16 }}
-            message="图片连通性测试会真实生成一张图片并产生费用"
-            description="测试固定使用 1024×1024、低质量、无文字的简单图案；成功后会打开独立结果弹窗，需要手动关闭。"
-          />
+          <>
+            <Form.Item
+              label="兼容代理接口"
+              name="force_image_base64"
+              valuePropName="checked"
+              tooltip="OpenAI 官方 GPT Image 默认返回 Base64，不需要开启。仅当第三方代理返回图片 URL，或提示“只返回了图片 URL”时开启；开启后会增加 response_format: b64_json。"
+              extra="只有第三方代理返回图片 URL 时才需要开启。"
+            >
+              <Switch checkedChildren="已开启" unCheckedChildren="关闭" />
+            </Form.Item>
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="图片连通性测试会真实生成一张图片并产生费用"
+              description="测试固定使用 1024×1024、低质量、无文字的简单图案；是否强制返回 Base64 由上方兼容开关控制。"
+            />
+          </>
         )}
         <Button type="link" style={{ padding: 0, marginBottom: 12 }} onClick={() => setAdvancedOpen((value) => !value)}>
           {advancedOpen ? "收起高级配置" : "展开高级配置"}
@@ -603,7 +658,9 @@ function ModelFormModal({ open, initialValues, confirmLoading, onCancel, onSubmi
             }
             extra={
               <div style={{ color: "#6c757d" }}>
-                <div>一般不用填写。这里的 <code>payload</code> 会最后合并进请求体，用于覆盖厂商特殊字段。</div>
+                <div>
+                  一般不用填写。这里的 <code>payload</code> 用于增加厂商特殊字段；图片返回方式由上方“兼容代理接口”开关控制。
+                </div>
                 示例：<code>{OPENAI_EXTRA_EXAMPLE}</code>
                 <br />Gemini 代理：<code>{GEMINI_QUERY_EXAMPLE}</code> 或 <code>{GEMINI_AUTH_HEADER_EXAMPLE}</code>
               </div>

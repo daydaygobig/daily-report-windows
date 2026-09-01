@@ -12,6 +12,7 @@ def test_image_connection_test_keeps_fixed_low_cost_fields():
             "size": "4096x4096",
             "quality": "high",
             "output_format": "webp",
+            "response_format": "b64_json",
             "provider_option": True,
         },
     }
@@ -20,4 +21,7 @@ def test_image_connection_test_keeps_fixed_low_cost_fields():
 
     assert result["auth_header"] == "X-API-Key"
     assert result["headers"] == {"X-Provider": "compatible"}
-    assert result["payload"] == {"provider_option": True}
+    assert result["payload"] == {
+        "response_format": "b64_json",
+        "provider_option": True,
+    }
