@@ -1,6 +1,6 @@
 import React, { useContext, useEffect, useMemo, useState } from "react";
 import { Button, Popconfirm, Space, Table, Tag, Tooltip, message } from "antd";
-import { MenuOutlined } from "@ant-design/icons";
+import { MenuOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   DragDropContext,
   Droppable,
@@ -91,7 +91,11 @@ const DragHandleCell: React.FC = () => {
 
 function TasksPage() {
   const queryClient = useQueryClient();
-  const { data: tasks, isLoading } = useQuery({ queryKey: ["tasks"], queryFn: fetchTasks });
+  const { data: tasks, isLoading, isFetching, refetch } = useQuery({
+    queryKey: ["tasks"],
+    queryFn: fetchTasks,
+    refetchOnMount: "always"
+  });
   const [talkerMap, setTalkerMap] = useState<Record<string, string>>({});
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
@@ -103,34 +107,84 @@ function TasksPage() {
 
   const invalidateTasks = () => queryClient.invalidateQueries({ queryKey: ["tasks"] });
 
+  const replaceTaskInCache = (updatedTask: Task) => {
+    queryClient.setQueryData<Task[] | undefined>(["tasks"], (current) =>
+      current?.map((task) => (task.id === updatedTask.id ? updatedTask : task))
+    );
+  };
+
+  const upsertJobInCache = (updatedJob: Job) => {
+    queryClient.setQueryData<Task[] | undefined>(["tasks"], (current) =>
+      current?.map((task) => {
+        if (task.id !== updatedJob.task_id) {
+          return task;
+        }
+        const exists = task.jobs.some((job) => job.id === updatedJob.id);
+        return {
+          ...task,
+          jobs: exists
+            ? task.jobs.map((job) => (job.id === updatedJob.id ? updatedJob : job))
+            : [...task.jobs, updatedJob]
+        };
+      })
+    );
+  };
+
   const createTaskMutation = useMutation({
     mutationFn: createTask,
-    onSuccess: invalidateTasks
+    onSuccess: (createdTask) => {
+      queryClient.setQueryData<Task[] | undefined>(["tasks"], (current) =>
+        current ? [...current, createdTask] : [createdTask]
+      );
+      return invalidateTasks();
+    }
   });
 
   const updateTaskMutation = useMutation({
     mutationFn: ({ id, payload }: { id: number; payload: TaskPayload }) => updateTask(id, payload),
-    onSuccess: invalidateTasks
+    onSuccess: (updatedTask) => {
+      replaceTaskInCache(updatedTask);
+      return invalidateTasks();
+    }
   });
 
   const deleteTaskMutation = useMutation({
     mutationFn: (id: number) => deleteTask(id),
-    onSuccess: invalidateTasks
+    onSuccess: (_result, taskId) => {
+      queryClient.setQueryData<Task[] | undefined>(["tasks"], (current) =>
+        current?.filter((task) => task.id !== taskId)
+      );
+      return invalidateTasks();
+    }
   });
 
   const createJobMutation = useMutation({
     mutationFn: ({ taskId, payload }: { taskId: number; payload: JobPayload }) => createJob(taskId, payload),
-    onSuccess: invalidateTasks
+    onSuccess: (createdJob) => {
+      upsertJobInCache(createdJob);
+      return invalidateTasks();
+    }
   });
 
   const updateJobMutation = useMutation({
     mutationFn: ({ jobId, payload }: { jobId: number; payload: JobPayload }) => updateJob(jobId, payload),
-    onSuccess: invalidateTasks
+    onSuccess: (updatedJob) => {
+      upsertJobInCache(updatedJob);
+      return invalidateTasks();
+    }
   });
 
   const deleteJobMutation = useMutation({
     mutationFn: (jobId: number) => deleteJob(jobId),
-    onSuccess: invalidateTasks
+    onSuccess: (_result, jobId) => {
+      queryClient.setQueryData<Task[] | undefined>(["tasks"], (current) =>
+        current?.map((task) => ({
+          ...task,
+          jobs: task.jobs.filter((job) => job.id !== jobId)
+        }))
+      );
+      return invalidateTasks();
+    }
   });
 
   const runJobMutation = useMutation({
@@ -622,13 +676,18 @@ function TasksPage() {
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 16 }}>
-        <Button type="primary" onClick={openCreateTaskModal}>
-          新增任务
-        </Button>
+        <Space>
+          <Button icon={<ReloadOutlined />} loading={isFetching} onClick={() => void refetch()}>
+            刷新
+          </Button>
+          <Button type="primary" onClick={openCreateTaskModal}>
+            新增任务
+          </Button>
+        </Space>
       </div>
       <Table<Task>
         columns={taskColumns}
-        loading={isLoading}
+        loading={isLoading || isFetching}
         dataSource={tasks ?? []}
         rowKey={(record) => record.id}
         pagination={false}

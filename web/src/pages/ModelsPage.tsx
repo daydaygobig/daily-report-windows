@@ -71,7 +71,12 @@ function ModelsPage() {
 
   const updateMutation = useMutation({
     mutationFn: ({ id, payload }: { id: number; payload: ModelUpdatePayload }) => updateModel(id, payload),
-    onSuccess: () => invalidate()
+    onSuccess: (updatedModel) => {
+      queryClient.setQueryData<Model[]>(["models"], (currentModels) =>
+        currentModels?.map((model) => (model.id === updatedModel.id ? updatedModel : model))
+      );
+      return invalidate();
+    }
   });
 
   const deleteMutation = useMutation({
