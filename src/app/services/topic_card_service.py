@@ -301,7 +301,7 @@ def _normalize_case_card(card: Any, index: int, *, style_config: dict[str, dict[
 
     initiator = dict(masks).get(raw_initiator, raw_initiator)
     background = _masked(card.get("background"), 220)
-    relationship = _masked(card.get("relationship"), 140)
+    relationship = _masked(card.get("relationship"), 240)
     analysis_points = [_masked(point, 120) for point in analysis[:4]]
     solution = _masked(card.get("solution"), 160)
     # summary/points 由槽位拼出，保证旧渲染引擎与旧展示路径仍可用
@@ -513,30 +513,34 @@ def _card_markdown(card: dict[str, Any]) -> str:
 def _case_card_markdown(card: dict[str, Any]) -> str:
     analysis = "\n".join(f"{index + 1}、{_with_at(point)}" for index, point in enumerate(card["analysis"]))
     speaker = _name_at(card["highlight_speaker"])
-    return "\n".join(
+    tags = "、".join(card.get("tags") or [])
+    lines = [
+        f"### {_theme_dot(card['theme'])} {card['title']}",
+        "",
+    ]
+    if tags:
+        lines.append(f"**关键词：**{tags}")
+        lines.append("")
+    lines.extend(
         [
-            f"### {_theme_dot(card['theme'])} {card['title']}",
-            "",
-            "**1、当事人：**",
-            _name_at(card["initiator"]),
-            "",
-            "**2、背景概述：**",
+            "**背景概述：**",
             card["background"],
             "",
-            "**3、人物关系：**",
+            "**人物关系：**",
             card["relationship"],
             "",
-            "**4、分析过程：**",
+            "**分析过程：**",
             analysis or "无",
             "",
-            "**5、解决方案：**",
+            "**解决方案：**",
             card["solution"],
             "",
-            "**6、金句：**",
+            "**金句：**",
             f"> {card['highlight_quote']}",
             f"> —— {speaker}",
         ]
     )
+    return "\n".join(lines)
 
 
 def _theme_dot(theme: str) -> str:

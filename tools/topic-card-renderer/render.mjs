@@ -636,12 +636,12 @@ function cardTreeFor(card) {
 // === 案例卡片（六槽位：背景概述/人物关系/分析过程/解决方案/金句） ===
 
 function measureCase(card) {
-  const titleLines = wrapText(card.title, 22, 352, 3);
+  const titleLines = wrapText(card.title, 22, 352, 4);
   const backgroundLines = wrapText(card.background, 15, 352, 10);
-  const relationshipLines = wrapText(card.relationship, 15, 352, 6);
-  const analysisLines = (card.analysis || []).map((point) => wrapText(point, 15, 320, 4));
-  const solutionLines = wrapText(card.solution, 15, 316, 6);
-  const highlightLines = wrapText(card.highlight_quote, 17, 304, 5);
+  const relationshipLines = wrapText(card.relationship, 15, 352, 12);
+  const analysisLines = (card.analysis || []).map((point) => wrapText(point, 15, 320, 6));
+  const solutionLines = wrapText(card.solution, 15, 316, 8);
+  const highlightLines = wrapText(card.highlight_quote, 17, 304, 11);
   const sectionHeight = 34; // 章节标题行 22 + marginBottom 12
   const bodyLine = 23; // fontSize 15 * lineHeight 1.5
   const height =
@@ -722,10 +722,10 @@ function caseCardTree(card) {
     h(
       "div",
       { style: { padding: "20px 24px", background: style.bodyFill } },
-      sectionBlock("01", "背景概述", paragraph(card.background)),
-      sectionBlock("02", "人物关系", paragraph(card.relationship)),
+      sectionBlock("", "背景概述", paragraph(card.background)),
+      sectionBlock("", "人物关系", paragraph(card.relationship)),
       sectionBlock(
-        "03",
+        "",
         "分析过程",
         h(
           "div",
@@ -741,7 +741,7 @@ function caseCardTree(card) {
         )
       ),
       sectionBlock(
-        "04",
+        "",
         "解决方案",
         h(
           "div",
@@ -788,7 +788,7 @@ function sectionHeaderTree(style, index, title) {
           fontWeight: 900
         }
       },
-      `${index} ${title}`
+      index ? `${index} ${title}` : title
     );
   }
   return h(
@@ -804,7 +804,7 @@ function sectionHeaderTree(style, index, title) {
         color: palette.ink
       }
     },
-    h("span", { style: { color: style.theme.main, fontSize: 16, fontWeight: 900, marginRight: 6 } }, index),
+    ...(index ? [h("span", { style: { color: style.theme.main, fontSize: 16, fontWeight: 900, marginRight: 6 } }, index)] : []),
     title
   );
 }
