@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     llm_timeout_sec: int = 120
     llm_stream_chunk_size: int = 2048
 
+    # QR code overlay for image cards (bottom-right corner)
+    qr_code_enabled: bool = True
+    qr_code_url: str = "https://md.xinjianhub.cn/"
+    qr_code_caption: str = "喜欢您来"
+    qr_code_size_ratio: float = 0.12
+
     # Alerting
     default_alert_webhook_id: Optional[int] = None
     alert_suppression_minutes: int = 10

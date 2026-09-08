@@ -9,6 +9,7 @@ from .job import JobOut
 
 
 TaskType = Literal["report", "export", "topic_card", "image_card"]
+CardInputSource = Literal["chatlog", "report"]
 TopicStyleConfig = Dict[str, Dict[str, str]]
 
 DEFAULT_TOPIC_STYLE_CONFIG: TopicStyleConfig = {
@@ -30,7 +31,10 @@ class TaskCreate(BaseModel):
     prompt: str = ""
     model_id: Optional[int] = None
     image_model_id: Optional[int] = None
+    upstream_task_id: Optional[int] = None
+    card_input_source: CardInputSource = "chatlog"
     model_sequence: Optional[List[TaskModelConfig]] = None
+    image_model_sequence: Optional[List[TaskModelConfig]] = None
     prompt_template_id: Optional[int] = None
     talkers: List[str] = Field(default_factory=list)
     talker_names: Optional[List[str]] = None
@@ -53,7 +57,10 @@ class TaskUpdate(BaseModel):
     prompt: Optional[str] = None
     model_id: Optional[int] = None
     image_model_id: Optional[int] = None
+    upstream_task_id: Optional[int] = None
+    card_input_source: Optional[CardInputSource] = None
     model_sequence: Optional[List[TaskModelConfig]] = None
+    image_model_sequence: Optional[List[TaskModelConfig]] = None
     prompt_template_id: Optional[int] = None
     talkers: Optional[List[str]] = None
     talker_names: Optional[List[str]] = None
@@ -74,7 +81,10 @@ class TaskOut(ORMBase):
     prompt: str
     model_id: Optional[int]
     image_model_id: Optional[int]
+    upstream_task_id: Optional[int] = None
+    card_input_source: CardInputSource = "chatlog"
     model_sequence: List[TaskModelConfig] = Field(default_factory=list)
+    image_model_sequence: List[TaskModelConfig] = Field(default_factory=list)
     prompt_template_id: Optional[int]
     talkers: List[str]
     talker_names: List[str] = Field(default_factory=list)

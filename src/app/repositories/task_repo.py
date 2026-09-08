@@ -30,6 +30,8 @@ class TaskRepository(CRUDRepository[Task]):
             payload["topic_style_config"] = json.dumps(payload["topic_style_config"], ensure_ascii=False)
         if "model_sequence" in payload and payload["model_sequence"] is not None and not isinstance(payload["model_sequence"], str):
             payload["model_sequence"] = json.dumps(payload["model_sequence"], ensure_ascii=False)
+        if "image_model_sequence" in payload and payload["image_model_sequence"] is not None and not isinstance(payload["image_model_sequence"], str):
+            payload["image_model_sequence"] = json.dumps(payload["image_model_sequence"], ensure_ascii=False)
         if "store_chatlog" in payload and payload["store_chatlog"] is None:
             payload.pop("store_chatlog")
         return payload

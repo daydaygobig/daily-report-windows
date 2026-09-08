@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from .config import get_settings
@@ -21,6 +21,23 @@ engine = create_engine(
     connect_args={"check_same_thread": False, "timeout": 30},
     pool_pre_ping=True,
 )
+
+
+@event.listens_for(engine, "connect")
+def _configure_sqlite_pragmas(dbapi_connection, connection_record):
+    """WAL 让读写互不阻塞；busy_timeout 让写冲突排队等待而不是立即抛 database is locked。"""
+
+    if engine.dialect.name != "sqlite":
+        return
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cursor.close()
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)
 Base = declarative_base()
 

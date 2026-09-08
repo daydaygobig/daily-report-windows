@@ -91,7 +91,7 @@ export type Job = {
   image_prompt?: string | null;
   image_split_enabled: boolean;
   image_split_prompt?: string | null;
-  image_aspect_ratio: "auto" | "1:1" | "3:2" | "2:3" | "9:16";
+  image_aspect_ratio: "auto" | "1:1" | "3:2" | "2:3" | "9:16" | "1:3";
   image_resolution: "auto" | "1k" | "2k" | "4k";
   max_image_count: number;
 };
@@ -110,7 +110,10 @@ export type Task = {
   prompt: string;
   model_id?: number | null;
   image_model_id?: number | null;
+  upstream_task_id?: number | null;
+  card_input_source?: "chatlog" | "report";
   model_sequence?: TaskModelConfig[];
+  image_model_sequence?: TaskModelConfig[];
   prompt_template_id?: number | null;
   talkers: string[];
   talker_names: string[];
@@ -136,7 +139,10 @@ export type TaskPayload = {
   prompt: string;
   model_id?: number | null;
   image_model_id?: number | null;
+  upstream_task_id?: number | null;
+  card_input_source?: "chatlog" | "report";
   model_sequence?: TaskModelConfig[] | null;
+  image_model_sequence?: TaskModelConfig[] | null;
   prompt_template_id?: number | null;
   talkers: string[];
   talker_names?: string[];
@@ -229,7 +235,7 @@ export type JobPayload = {
   image_prompt_template_id?: number | null;
   image_split_enabled: boolean;
   image_split_prompt?: string | null;
-  image_aspect_ratio: "auto" | "1:1" | "3:2" | "2:3" | "9:16";
+  image_aspect_ratio: "auto" | "1:1" | "3:2" | "2:3" | "9:16" | "1:3";
   image_resolution: "auto" | "1k" | "2k" | "4k";
   max_image_count: number;
 };
@@ -269,8 +275,10 @@ export async function deleteJob(jobId: number): Promise<void> {
   await axios.delete<ApiResponse<null>>(`/api/tasks/jobs/${jobId}`);
 }
 
-export async function runJob(jobId: number): Promise<void> {
-  await axios.post<ApiResponse<unknown>>(`/api/tasks/jobs/${jobId}/run`);
+export async function runJob(jobId: number, selectedTopic?: string): Promise<void> {
+  await axios.post<ApiResponse<unknown>>(`/api/tasks/jobs/${jobId}/run`, {
+    selected_topic: selectedTopic || undefined
+  });
 }
 
 export async function reorderJobs(taskId: number, jobIds: number[]): Promise<Job[]> {

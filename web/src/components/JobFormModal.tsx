@@ -100,7 +100,7 @@ type JobFormValues = {
   image_prompt_template_id?: number;
   image_split_enabled: boolean;
   image_split_prompt?: string | null;
-  image_aspect_ratio: "auto" | "1:1" | "3:2" | "2:3" | "9:16";
+  image_aspect_ratio: "auto" | "1:1" | "3:2" | "2:3" | "9:16" | "1:3";
   image_resolution: "auto" | "1k" | "2k" | "4k";
   max_image_count: number;
   ima_sync_enabled: boolean;
@@ -372,7 +372,7 @@ const defaultFormValues: JobFormValues = {
   image_split_prompt: DEFAULT_IMAGE_SPLIT_PROMPT,
   image_aspect_ratio: "auto",
   image_resolution: "auto",
-  max_image_count: 6,
+  max_image_count: 12,
   ima_sync_enabled: false,
   ima_use_default_account: true,
   ima_account_id: undefined,
@@ -542,7 +542,7 @@ const toJobFormValues = (job: Job): JobFormValues => {
     image_split_prompt: normalizeImageSplitPrompt(job.image_split_prompt),
     image_aspect_ratio: job.image_aspect_ratio ?? "auto",
     image_resolution: job.image_resolution ?? "auto",
-    max_image_count: job.max_image_count ?? 6,
+    max_image_count: job.max_image_count ?? 12,
     ima_sync_enabled: job.ima_sync_enabled ?? false,
     ima_use_default_account: job.ima_use_default_account ?? true,
     ima_account_id: job.ima_account_id ?? undefined,
@@ -1055,7 +1055,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
         isImageCardTask && values.image_split_enabled ? values.image_split_prompt?.trim() || DEFAULT_IMAGE_SPLIT_PROMPT : null,
       image_aspect_ratio: isImageCardTask ? values.image_aspect_ratio ?? "auto" : "auto",
       image_resolution: isImageCardTask ? values.image_resolution ?? "auto" : "auto",
-      max_image_count: isImageCardTask ? values.max_image_count ?? 6 : 6,
+      max_image_count: isImageCardTask ? values.max_image_count ?? 12 : 6,
       ima_sync_enabled: imaSyncActive,
       ima_use_default_account: imaSyncActive ? values.ima_use_default_account : true,
       ima_account_id: imaSyncActive && !values.ima_use_default_account ? values.ima_account_id ?? null : null,
@@ -1380,7 +1380,8 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
               { label: "方图 1:1", value: "1:1" },
               { label: "横版 3:2", value: "3:2" },
               { label: "竖版 2:3", value: "2:3" },
-              { label: "竖屏 9:16", value: "9:16" }
+              { label: "竖屏 9:16", value: "9:16" },
+              { label: "竖版 1:3（上下拼卡单卡，自动拼为 1:6 长图）", value: "1:3" }
             ]}
           />
         </Form.Item>

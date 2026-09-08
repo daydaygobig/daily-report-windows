@@ -302,8 +302,9 @@ def _normalize_case_card(card: Any, index: int, *, style_config: dict[str, dict[
     initiator = dict(masks).get(raw_initiator, raw_initiator)
     background = _masked(card.get("background"), 220)
     relationship = _masked(card.get("relationship"), 240)
-    analysis_points = [_masked(point, 120) for point in analysis[:4]]
-    solution = _masked(card.get("solution"), 160)
+    # 截断上限对齐案例卡实际水位：分析 3~5 条、每条 150 字；解决方案 240 字
+    analysis_points = [_masked(point, 150) for point in analysis[:5]]
+    solution = _masked(card.get("solution"), 240)
     # summary/points 由槽位拼出，保证旧渲染引擎与旧展示路径仍可用
     summary = background if not relationship else f"{background}\n人物关系：{relationship}"
     points = analysis_points + [solution]

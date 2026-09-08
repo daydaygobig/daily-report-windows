@@ -1,6 +1,9 @@
 """Shared rules for image-card text blocks."""
 
 import re
+from io import BytesIO
+
+from PIL import Image, ImageStat
 
 BLOCK_START = "<!-- CONTENT_BLOCK_START -->"
 BLOCK_END = "<!-- CONTENT_BLOCK_END -->"
@@ -34,6 +37,7 @@ IMAGE_SIZE_MAP = {
         "3:2": "1536x1024",
         "2:3": "1024x1536",
         "9:16": "864x1536",
+        "1:3": "720x2160",
     },
     "2k": {
         "auto": "2048x2048",
@@ -41,6 +45,7 @@ IMAGE_SIZE_MAP = {
         "3:2": "2048x1360",
         "2:3": "1360x2048",
         "9:16": "1152x2048",
+        "1:3": "1080x3240",
     },
     "4k": {
         "auto": "2880x2880",
@@ -48,6 +53,7 @@ IMAGE_SIZE_MAP = {
         "3:2": "3520x2336",
         "2:3": "2336x3520",
         "9:16": "2160x3840",
+        "1:3": "1440x4320",
     },
 }
 
@@ -98,6 +104,104 @@ def resolve_image_size(aspect_ratio: str | None, resolution: str | None) -> str:
     if not sizes or ratio not in sizes:
         raise ValueError("图片比例或分辨率配置不受支持")
     return sizes[ratio]
+
+
+def stitch_images_vertically(images: list[bytes]) -> bytes:
+    """把多张图片按顺序上下拼接成一张长图（像素级对齐，无接缝）。
+
+    以最窄一张的宽度为基准，其余等比缩放到同一宽度后依次堆叠；
+    用于 1:3 上下拼卡模式：相邻两张（同一话题的上卡+下卡）合成 1:6 长图。
+    拼接前会裁掉相邻边缘的纯色空白行（上卡裁底、下卡裁顶），只保留
+    24px 缓冲，避免生图模型在接缝一侧堆积大片留白。
+    """
+    if not images:
+        raise ValueError("没有可拼接的图片")
+    frames = []
+    for raw in images:
+        with Image.open(BytesIO(raw)) as im:
+            frames.append(im.convert("RGB"))
+    trimmed: list[Image.Image] = []
+    count = len(frames)
+    for index, im in enumerate(frames):
+        if count > 1:
+            im = _trim_blank_edge(im, trim_top=index > 0, trim_bottom=index < count - 1)
+        trimmed.append(im)
+    width = min(im.width for im in trimmed)
+    resized = []
+    for im in trimmed:
+        if im.width != width:
+            im = im.resize((width, max(1, round(im.height * width / im.width))), Image.LANCZOS)
+        resized.append(im)
+    total_height = sum(im.height for im in resized)
+    canvas = Image.new("RGB", (width, total_height), (255, 255, 255))
+    offset = 0
+    for im in resized:
+        canvas.paste(im, (0, offset))
+        offset += im.height
+    buffer = BytesIO()
+    canvas.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+# 单行 RGB 极差不超过该阈值视为纯色行（容忍压缩噪声）
+BLANK_ROW_SPREAD = 16
+# 纯色行与背景参考色的距离超过该阈值即为内容行
+BG_COLOR_TOLERANCE = 24
+# 裁剪后在内容边缘保留的纯色缓冲高度
+TRIM_BUFFER_PX = 24
+# 裁剪后允许的最小图高，低于此值视为整卡空白，放弃裁剪
+MIN_TRIMMED_HEIGHT = 200
+
+
+def _bg_reference(im: Image.Image) -> tuple[int, int, int]:
+    """取四角像素均值作为背景参考色（卡片四角通常为留白）。"""
+    width, height = im.size
+    corners = (
+        im.getpixel((0, 0)),
+        im.getpixel((width - 1, 0)),
+        im.getpixel((0, height - 1)),
+        im.getpixel((width - 1, height - 1)),
+    )
+    return tuple(sum(c[i] for c in corners) // 4 for i in range(3))  # type: ignore[return-value]
+
+
+def _is_blank_row(im: Image.Image, y: int, bg: tuple[int, int, int]) -> bool:
+    """行内极差小（纯色）且颜色贴近背景参考色，才判定为可裁的空白行。"""
+    row = im.crop((0, y, im.width, y + 1))
+    if max(hi - lo for lo, hi in row.getextrema()) > BLANK_ROW_SPREAD:
+        return False
+    means = ImageStat.Stat(row).mean
+    return all(abs(means[i] - bg[i]) <= BG_COLOR_TOLERANCE for i in range(3))
+
+
+def _trim_blank_edge(im: Image.Image, *, trim_top: bool, trim_bottom: bool) -> Image.Image:
+    """裁掉图片顶部/底部的连续纯色空白行，在内容边缘保留 24px 缓冲。"""
+    height = im.height
+    bg = _bg_reference(im)
+    top = 0
+    bottom = height
+    if trim_bottom:
+        last_content = None
+        for y in range(height - 1, -1, -1):
+            if not _is_blank_row(im, y, bg):
+                last_content = y
+                break
+        if last_content is None:
+            return im
+        bottom = min(height, last_content + 1 + TRIM_BUFFER_PX)
+    if trim_top:
+        first_content = None
+        for y in range(0, bottom):
+            if not _is_blank_row(im, y, bg):
+                first_content = y
+                break
+        if first_content is not None:
+            top = max(top, first_content - TRIM_BUFFER_PX)
+    if bottom - top < MIN_TRIMMED_HEIGHT:
+        return im
+    if top == 0 and bottom == height:
+        return im
+    return im.crop((0, top, im.width, bottom))
 
 
 def compose_image_prompt(template: str | None, block: str | None) -> str:

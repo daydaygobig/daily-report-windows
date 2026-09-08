@@ -1,9 +1,11 @@
 """OpenAI Images-compatible image generation client."""
 
+import asyncio
 import base64
 import binascii
 import json
 import struct
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -16,6 +18,8 @@ from .security import decrypt_value
 settings = get_settings()
 DEFAULT_IMAGE_BASE_URL = "https://api.openai.com/v1/images/generations"
 IMAGE_ENDPOINT_SUFFIX = "/v1/images/generations"
+IMAGE_TASK_POLL_INTERVAL_SEC = 3.0
+IMAGE_TASK_MAX_WAIT_SEC = 600.0
 
 
 class ImageGenerationError(Exception):
@@ -145,6 +149,20 @@ async def generate_image(
     if not isinstance(items, list) or not items or not isinstance(items[0], dict):
         raise ImageGenerationError("图片模型没有返回图片数据")
     item = items[0]
+    task_id = item.get("task_id")
+    if (
+        isinstance(task_id, str)
+        and task_id.strip()
+        and not item.get("b64_json")
+        and not item.get("url")
+    ):
+        # 异步任务式接口（如 APIMart）：提交后返回 task_id，需要轮询任务结果
+        return await _await_async_image_task(
+            base_url=base_url,
+            headers=headers,
+            task_id=task_id.strip(),
+            timeout=request_timeout,
+        )
     encoded = item.get("b64_json")
     if not isinstance(encoded, str) or not encoded.strip():
         if item.get("url"):
@@ -191,3 +209,90 @@ def _load_extra_config(model, extra_payload: dict[str, Any] | None) -> dict[str,
     except json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def image_task_query_base(base_url: str) -> str:
+    """从 images/generations 端点推导任务查询端点（.../v1/tasks）。"""
+
+    parts = urlsplit(base_url)
+    path = parts.path
+    lowered = path.lower()
+    while lowered.endswith("/images/generations"):
+        path = path[: -len("/images/generations")].rstrip("/")
+        lowered = path.lower()
+    if not lowered.endswith("/v1"):
+        path = path.rstrip("/") + "/v1"
+    return urlunsplit((parts.scheme, parts.netloc, path.rstrip("/") + "/tasks", "", ""))
+
+
+async def _await_async_image_task(
+    *,
+    base_url: str,
+    headers: dict,
+    task_id: str,
+    timeout: int | None,
+) -> GeneratedImage:
+    query_url = f"{image_task_query_base(base_url)}/{task_id}"
+    deadline = time.monotonic() + IMAGE_TASK_MAX_WAIT_SEC
+    request_timeout = timeout or settings.llm_timeout_sec
+    while True:
+        if time.monotonic() >= deadline:
+            raise ImageGenerationError(f"图片任务超时未完成（task_id={task_id}）")
+        await asyncio.sleep(IMAGE_TASK_POLL_INTERVAL_SEC)
+        try:
+            async with httpx.AsyncClient(timeout=request_timeout) as client:
+                response = await client.get(query_url, headers=headers)
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ImageGenerationError(
+                f"图片任务查询失败: {exc.response.status_code} {exc.response.text.strip()}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ImageGenerationError(f"图片任务查询失败: {exc}") from exc
+        try:
+            payload = response.json()
+        except json.JSONDecodeError as exc:
+            raise ImageGenerationError("图片任务查询返回了非 JSON 响应") from exc
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            continue
+        status = str(data.get("status") or "").lower()
+        if status == "completed":
+            return await _download_task_image(data, request_timeout)
+        if status == "failed":
+            error = data.get("error") if isinstance(data.get("error"), dict) else {}
+            message = str(error.get("message") or data.get("error") or "未知原因")
+            raise ImageGenerationError(f"图片任务失败：{message}")
+
+
+async def _download_task_image(data: dict, timeout: int | None) -> GeneratedImage:
+    result = data.get("result") if isinstance(data.get("result"), dict) else {}
+    images = result.get("images") if isinstance(result.get("images"), list) else []
+    first = images[0] if images and isinstance(images[0], dict) else {}
+    raw_url = first.get("url")
+    image_url = ""
+    if isinstance(raw_url, list):
+        image_url = str(raw_url[0]) if raw_url else ""
+    elif isinstance(raw_url, str):
+        image_url = raw_url
+    if not image_url:
+        raise ImageGenerationError("图片任务完成但没有返回图片地址")
+    request_timeout = timeout or settings.llm_timeout_sec
+    try:
+        async with httpx.AsyncClient(timeout=request_timeout, follow_redirects=True) as client:
+            response = await client.get(image_url)
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise ImageGenerationError(f"图片下载失败: {exc.response.status_code}") from exc
+    except httpx.HTTPError as exc:
+        raise ImageGenerationError(f"图片下载失败: {exc}") from exc
+    content = response.content
+    if not content:
+        raise ImageGenerationError("下载到的图片为空")
+    mime_type = "image/png"
+    lowered = image_url.lower()
+    if lowered.endswith((".jpg", ".jpeg")):
+        mime_type = "image/jpeg"
+    elif lowered.endswith(".webp"):
+        mime_type = "image/webp"
+    return GeneratedImage(content=content, mime_type=mime_type)

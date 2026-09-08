@@ -259,25 +259,33 @@ function textWidth(text, size) {
 }
 
 function wrapText(text, size, maxWidth, maxLines = Infinity) {
-  const chars = [...String(text ?? "")];
+  // 支持 \n 强制换行（案例卡背景概述的三层结构）：先按换行切段，段内再按宽度折行
+  const segments = String(text ?? "").split("\n");
   const lines = [];
-  let current = "";
-  let width = 0;
-  for (const ch of chars) {
-    const w = charWidth(ch, size);
-    if (current && width + w > maxWidth) {
-      lines.push(current);
-      current = ch.trimStart();
-      width = textWidth(current, size);
-      if (lines.length >= maxLines) break;
-    } else {
-      current += ch;
-      width += w;
+  for (const segment of segments) {
+    if (lines.length >= maxLines) break;
+    if (!segment.length) {
+      lines.push("");
+      continue;
     }
+    let current = "";
+    let width = 0;
+    for (const ch of [...segment]) {
+      const w = charWidth(ch, size);
+      if (current && width + w > maxWidth) {
+        lines.push(current);
+        current = ch.trimStart();
+        width = textWidth(current, size);
+        if (lines.length >= maxLines) break;
+      } else {
+        current += ch;
+        width += w;
+      }
+    }
+    if (current && lines.length < maxLines) lines.push(current);
   }
-  if (current && lines.length < maxLines) lines.push(current);
   if (!lines.length) lines.push("");
-  if (lines.length === maxLines && chars.length > [...lines.join("")].length) {
+  if (lines.length === maxLines && String(text ?? "").length > [...lines.join("")].length) {
     lines[lines.length - 1] = lines[lines.length - 1].replace(/.{1,2}$/, "…");
   }
   return lines;
@@ -672,7 +680,11 @@ function caseCardTree(card) {
   const height = measureCase(card).height;
   const tags = cardTags(card);
   const paragraph = (text) =>
-    h("div", { style: { fontSize: 15, color: palette.body, lineHeight: 1.5 } }, text);
+    h(
+      "div",
+      { style: { fontSize: 15, color: palette.body, lineHeight: 1.5, whiteSpace: "pre-line" } },
+      text
+    );
   const sectionBlock = (index, title, content) =>
     h("div", { style: { marginBottom: 24 } }, sectionHeaderTree(style, index, title), content);
   return h(

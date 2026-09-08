@@ -72,6 +72,10 @@ export type ImageCardMeta = {
       错误信息?: string | null;
     }[];
   }[];
+  内容块列表?: {
+    序号?: number;
+    摘要?: string;
+  }[];
 };
 
 export type Execution = {

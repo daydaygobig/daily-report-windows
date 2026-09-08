@@ -259,3 +259,71 @@ async def test_scheduler_skips_image_dependencies_for_no_image_content(monkeypat
     assert meta["deliveries"] == []
     assert execution.summary_md == image_card_service.NO_IMAGE_CONTENT_NOTICE
     assert sent_messages[0]["summary"] == image_card_service.NO_IMAGE_CONTENT_NOTICE
+
+
+def test_resolve_image_size_supports_paired_card_ratio():
+    """左右拼卡的 1:3 竖版比例在各级分辨率下都可用。"""
+    assert image_card_service.resolve_image_size("1:3", "1k") == "720x2160"
+    assert image_card_service.resolve_image_size("1:3", "2k") == "1080x3240"
+    assert image_card_service.resolve_image_size("1:3", "4k") == "1440x4320"
+    assert image_card_service.resolve_image_size("1:3", "auto") == "720x2160"
+
+
+def test_stitch_images_vertically_pairs_and_scales():
+    """上下拼卡：相邻两张等宽拼接为 1:6 长图；宽度不一致时按最窄宽度等比缩放。"""
+    import io
+
+    from PIL import Image
+
+    def _png(width: int, height: int, color: tuple) -> bytes:
+        buf = io.BytesIO()
+        Image.new("RGB", (width, height), color).save(buf, format="PNG")
+        return buf.getvalue()
+
+    merged = image_card_service.stitch_images_vertically([_png(100, 300, (255, 0, 0)), _png(100, 300, (0, 0, 255))])
+    with Image.open(io.BytesIO(merged)) as im:
+        assert im.size == (100, 600)
+        assert im.getpixel((50, 150)) == (255, 0, 0)
+        assert im.getpixel((50, 450)) == (0, 0, 255)
+
+    merged_scaled = image_card_service.stitch_images_vertically(
+        [_png(100, 300, (255, 0, 0)), _png(80, 240, (0, 0, 255))]
+    )
+    with Image.open(io.BytesIO(merged_scaled)) as im:
+        assert im.size[0] == 80
+        # 100x300 等比缩放到宽 80 后高 240，加上第二张 240，总高 480
+        assert im.size[1] == 480
+
+    import pytest
+
+    with pytest.raises(ValueError):
+        image_card_service.stitch_images_vertically([])
+
+
+def test_stitch_trims_blank_edges_at_seam():
+    """上下拼卡：上卡裁掉底部空白、下卡裁掉顶部空白，各保留 24px 缓冲。"""
+    import io
+
+    from PIL import Image
+
+    def _card(band_top: int, band_bottom: int, color: tuple) -> bytes:
+        im = Image.new("RGB", (100, 300), (248, 243, 227))
+        for y in range(band_top, band_bottom):
+            for x in range(0, 100):
+                im.putpixel((x, y), color)
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue()
+
+    upper = _card(20, 200, (255, 0, 0))  # 内容在上部，底部 100px 空白
+    lower = _card(120, 280, (0, 0, 255))  # 内容在下部，顶部 120px 空白
+    merged = image_card_service.stitch_images_vertically([upper, lower])
+    with Image.open(io.BytesIO(merged)) as im:
+        # 上卡：内容末行 199，保留至 199+1+24=224，高 224
+        # 下卡：内容首行 120，从 120-24=96 起保留，高 204；拼后总高 428
+        assert im.size == (100, 428)
+        assert im.getpixel((50, 50)) == (255, 0, 0)
+        assert im.getpixel((50, 300)) == (0, 0, 255)
+        # 接缝附近的缓冲区应为主背景色
+        assert im.getpixel((50, 215)) == (248, 243, 227)
+        assert im.getpixel((50, 235)) == (248, 243, 227)

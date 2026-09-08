@@ -1,5 +1,7 @@
 """Routes for tasks and jobs."""
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
 from sqlalchemy.orm import Session
@@ -119,8 +121,13 @@ def reorder_jobs(task_id: int, payload: JobReorderPayload, db: Session = Depends
 
 
 @router.post("/jobs/{job_id}/run", response_model=dict)
-async def run_job(job_id: int, db: Session = Depends(get_db)):
-    execution_id = await scheduler_service.run_job_immediately(job_id)
+async def run_job(job_id: int, payload: Optional[dict] = None, db: Session = Depends(get_db)):
+    selected_topic = None
+    if isinstance(payload, dict):
+        raw_topic = payload.get("selected_topic")
+        if isinstance(raw_topic, str) and raw_topic.strip():
+            selected_topic = raw_topic.strip()
+    execution_id = await scheduler_service.run_job_immediately(job_id, selected_topic=selected_topic)
     if execution_id is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": "作业不存在或未启用"})
     execution = execution_service.get_execution(db, execution_id)

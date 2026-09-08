@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Form, Input, InputNumber, Modal, Select, Space, Spin, Switch, Tooltip, Typography, message } from "antd";
 import type { SelectProps } from "antd";
 import type { Task, TaskPayload, TopicStyleConfig, TopicStyleKey, TopicThemeKey, TopicTypeKey } from "../services/tasks";
+import { fetchTasks } from "../services/tasks";
 import { fetchModels } from "../services/models";
 import { fetchChatrooms } from "../services/chatRecords";
 import { fetchWebhooks } from "../services/webhooks";
@@ -19,6 +20,9 @@ type TaskFormValues = {
   model_id?: number;
   model_sequence?: { model_id?: number; max_attempts?: number }[];
   image_model_id?: number;
+  image_model_sequence?: { model_id?: number; max_attempts?: number }[];
+  upstream_task_id?: number;
+  card_input_source: "chatlog" | "report";
   talkers: string[];
   talker_names?: string[];
   push_webhook_ids: number[];
@@ -361,6 +365,9 @@ const defaultFormValues: TaskFormValues = {
   model_id: undefined,
   model_sequence: [{ model_id: undefined, max_attempts: 2 }],
   image_model_id: undefined,
+  image_model_sequence: [{ model_id: undefined, max_attempts: 2 }],
+  upstream_task_id: 0,
+  card_input_source: "chatlog",
   talkers: [],
   talker_names: [],
   push_webhook_ids: [],
@@ -379,6 +386,7 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
   const title = useMemo(() => (initialValues ? "编辑任务" : "新增任务"), [initialValues]);
   const [modelOptions, setModelOptions] = useState<Option<number>[]>([]);
   const [imageModelOptions, setImageModelOptions] = useState<Option<number>[]>([]);
+  const [reportTasks, setReportTasks] = useState<Task[]>([]);
   const [chatroomOptions, setChatroomOptions] = useState<Option<string>[]>([]);
   const [webhookOptions, setWebhookOptions] = useState<Option<number>[]>([]);
   const [chatroomLoading, setChatroomLoading] = useState(false);
@@ -392,6 +400,7 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
 
   const customPromptEnabled = Form.useWatch("system_prompt_custom_enabled", form);
   const taskType = Form.useWatch("task_type", form) ?? "report";
+  const cardInputSource = Form.useWatch("card_input_source", form) ?? "chatlog";
   const isExportTask = taskType === "export";
   const isTopicCardTask = taskType === "topic_card";
   const isImageCardTask = taskType === "image_card";
@@ -413,6 +422,11 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
   const loadWebhooks = useCallback(async () => {
     const webhooks = await fetchWebhooks();
     setWebhookOptions(webhooks.map((item) => ({ label: item.name, value: item.id })));
+  }, []);
+
+  const loadUpstreamTasks = useCallback(async () => {
+    const list = await fetchTasks();
+    setReportTasks(list.filter((item) => item.task_type === "report"));
   }, []);
 
   const loadTemplates = useCallback(async () => {
@@ -477,6 +491,17 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
                     }))
                   : [{ model_id: initialValues.model_id ?? undefined, max_attempts: 2 }]),
           image_model_id: initialValues.image_model_id ?? undefined,
+          upstream_task_id: initialValues.upstream_task_id ?? 0,
+          card_input_source: initialValues.card_input_source ?? "chatlog",
+          image_model_sequence:
+            initialValues.task_type === "image_card"
+              ? (initialValues.image_model_sequence && initialValues.image_model_sequence.length
+                  ? initialValues.image_model_sequence.map((item) => ({
+                      model_id: item.model_id,
+                      max_attempts: item.max_attempts || 2
+                    }))
+                  : [{ model_id: initialValues.image_model_id ?? undefined, max_attempts: 2 }])
+              : [{ model_id: undefined, max_attempts: 2 }],
           talkers: initialValues.talkers ?? [],
           talker_names: initialValues.talker_names ?? [],
           push_webhook_ids: initialValues.push_webhook_ids ?? [],
@@ -494,6 +519,7 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
     setChatroomKeyword("");
     void loadModels();
     void loadWebhooks();
+    void loadUpstreamTasks();
     void loadChatrooms(undefined, values.talkers);
     void loadTemplates().then((list) => {
       const firstMatching = list?.find((item) => (item.template_type ?? "regular") === "regular");
@@ -502,7 +528,7 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
         form.setFieldsValue({ prompt: firstMatching.content });
       }
     });
-  }, [open, initialValues, form, loadModels, loadWebhooks, loadChatrooms, loadTemplates]);
+  }, [open, initialValues, form, loadModels, loadWebhooks, loadUpstreamTasks, loadChatrooms, loadTemplates]);
 
   useEffect(() => {
     if (customPromptEnabled && !form.getFieldValue("system_prompt_template")) {
@@ -580,8 +606,13 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
       message.error("请至少选择一个模型");
       return;
     }
-    if (isImageCardTask && !values.image_model_id) {
-      message.error("请选择图片模型");
+    const imageModelSequence = (values.image_model_sequence ?? []).filter((item) => item?.model_id);
+    if (isImageCardTask && imageModelSequence.length === 0) {
+      message.error("请至少选择一个图片模型");
+      return;
+    }
+    if ((isTopicCardTask || isImageCardTask) && values.card_input_source === "report" && !values.upstream_task_id) {
+      message.error("纯日报内容模式必须选择上游日报任务");
       return;
     }
     const optionMap = new Map(chatroomOptions.map((item) => [item.value, item.label]));
@@ -597,7 +628,13 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
       task_type: values.task_type,
       prompt: isExportTask ? "" : values.prompt,
       model_id: isExportTask ? null : values.model_sequence?.[0]?.model_id ?? null,
-      image_model_id: isImageCardTask ? values.image_model_id ?? null : null,
+      image_model_id: isImageCardTask ? ((imageModelSequence[0]?.model_id as number) ?? null) : null,
+      image_model_sequence: isImageCardTask
+        ? imageModelSequence.map((item) => ({
+            model_id: item.model_id as number,
+            max_attempts: Math.max(Number(item.max_attempts || 2), 1)
+          }))
+        : null,
       model_sequence: isExportTask
         ? null
         : modelSequence
@@ -606,6 +643,8 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
               max_attempts: Math.max(Number(item.max_attempts || 2), 1)
             })),
       prompt_template_id: isExportTask ? null : selectedTemplateId,
+      upstream_task_id: isTopicCardTask || isImageCardTask ? (values.upstream_task_id ?? 0) : null,
+      card_input_source: isTopicCardTask || isImageCardTask ? values.card_input_source : undefined,
       talkers: talkerPairs.map((item) => item.id),
       talker_names: talkerPairs.map((item) => item.name),
       push_webhook_ids: isExportTask ? [] : values.push_webhook_ids ?? [],
@@ -656,6 +695,47 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
             ]}
           />
         </Form.Item>
+        {isTopicCardTask || isImageCardTask ? (
+          <Form.Item
+            label="上游日报任务"
+            name="upstream_task_id"
+            tooltip="选择日报任务后，本任务每次执行会自动关联该日报最近一次成功生成的结果；若日报尚未生成成功或已超过 24 小时：聊天记录模式自动回退为自行选题，纯日报内容模式直接报错。"
+          >
+            <Select
+              options={[
+                { label: "不跟随日报（自行选题）", value: 0 },
+                ...reportTasks
+                  .filter((item) => item.id !== initialValues?.id)
+                  .map((item) => ({ label: item.name, value: item.id }))
+              ]}
+              placeholder="选择要跟随的日报任务"
+            />
+          </Form.Item>
+        ) : null}
+        {isTopicCardTask || isImageCardTask ? (
+          <Form.Item
+            label="卡片输入来源"
+            name="card_input_source"
+            tooltip="聊天记录：拉取群聊记录作为模型输入（默认，行为与旧版一致）。纯日报内容：不拉聊天记录，直接使用上游日报中每个深度话题的完整内容（背景/讨论/解决方案/金句）作为模型输入，日报缺失或超期时任务直接报错。"
+          >
+            <Select
+              options={[
+                { label: "聊天记录（拉取群聊记录生成卡片）", value: "chatlog" },
+                { label: "纯日报内容（使用上游日报话题内容，不拉聊天记录）", value: "report" }
+              ]}
+            />
+          </Form.Item>
+        ) : null}
+        {(isTopicCardTask || isImageCardTask) && cardInputSource === "chatlog" ? (
+          <Typography.Paragraph type="secondary" style={{ marginTop: -8, marginBottom: 16 }}>
+            当前为聊天记录模式：若上方选择了上游日报任务，会把日报的话题标题清单注入提示词，卡片话题与日报一一对应。
+          </Typography.Paragraph>
+        ) : null}
+        {(isTopicCardTask || isImageCardTask) && cardInputSource === "report" ? (
+          <Typography.Paragraph type="secondary" style={{ marginTop: -8, marginBottom: 16 }}>
+            当前为纯日报内容模式：建议搭配「日报话题案例卡（纯日报内容）」提示词模板使用。
+          </Typography.Paragraph>
+        ) : null}
         {isTopicCardTask ? (
           <div style={{ marginBottom: 16, padding: 14, border: "1px solid #f0f0f0", borderRadius: 8, background: "#fafafa" }}>
             <Space align="center" style={{ marginBottom: 8 }}>
@@ -871,19 +951,88 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
               )}
             </Form.List>
             {isImageCardTask ? (
-              <Form.Item
-                label="图片模型"
-                name="image_model_id"
-                rules={[{ required: true, message: "请选择图片模型" }]}
-                tooltip="文本模型先生成 Markdown；图片模型再按拆分结果逐张生图。"
-              >
-                <Select
-                  showSearch
-                  placeholder={imageModelOptions.length ? "请选择图片模型" : "请先在模型配置中新增图片模型"}
-                  options={imageModelOptions}
-                  optionFilterProp="label"
-                />
-              </Form.Item>
+              <Form.List name="image_model_sequence">
+                {(fields, { add, remove, move }) => (
+                  <div style={{ marginBottom: 16 }}>
+                    <Space align="center" style={{ marginBottom: 8 }}>
+                      <Typography.Text strong>图片模型执行顺序</Typography.Text>
+                      <Tooltip title="第一行是主图片模型，后面的行是备用图片模型。某张图片生成失败时会按顺序切换模型重试；序列里的模型必须是在模型配置中类型为「图片」的模型。">
+                        <InfoCircleOutlined />
+                      </Tooltip>
+                    </Space>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "48px minmax(260px, 1fr) 150px 116px",
+                        gap: 8,
+                        marginBottom: 6,
+                        color: "rgba(0, 0, 0, 0.45)",
+                        fontSize: 12
+                      }}
+                    >
+                      <span>顺序</span>
+                      <span>图片模型</span>
+                      <span>最多执行次数</span>
+                      <span>操作</span>
+                    </div>
+                    <div style={{ display: "grid", gap: 8 }}>
+                      {fields.map((field, index) => (
+                        <div
+                          key={field.key}
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "48px minmax(260px, 1fr) 150px 116px",
+                            gap: 8,
+                            alignItems: "center"
+                          }}
+                        >
+                          <Typography.Text type="secondary">#{index + 1}</Typography.Text>
+                          <Form.Item
+                            {...field}
+                            name={[field.name, "model_id"]}
+                            rules={[{ required: true, message: "请选择图片模型" }]}
+                            style={{ marginBottom: 0 }}
+                          >
+                            <Select
+                              showSearch
+                              placeholder={index === 0 ? "请选择主图片模型" : "请选择备用图片模型"}
+                              options={imageModelOptions}
+                              optionFilterProp="label"
+                            />
+                          </Form.Item>
+                          <Form.Item
+                            {...field}
+                            name={[field.name, "max_attempts"]}
+                            rules={[{ required: true, message: "请输入次数" }]}
+                            style={{ marginBottom: 0 }}
+                          >
+                            <InputNumber min={1} placeholder="次数" style={{ width: "100%" }} />
+                          </Form.Item>
+                          <Space size={4}>
+                            <Tooltip title="上移">
+                              <Button size="small" icon={<ArrowUpOutlined />} disabled={index === 0} onClick={() => move(index, index - 1)} />
+                            </Tooltip>
+                            <Tooltip title="下移">
+                              <Button size="small" icon={<ArrowDownOutlined />} disabled={index === fields.length - 1} onClick={() => move(index, index + 1)} />
+                            </Tooltip>
+                            <Tooltip title="删除">
+                              <Button size="small" icon={<DeleteOutlined />} disabled={fields.length <= 1} onClick={() => remove(field.name)} />
+                            </Tooltip>
+                          </Space>
+                        </div>
+                      ))}
+                    </div>
+                    <Button
+                      type="dashed"
+                      icon={<PlusOutlined />}
+                      style={{ marginTop: 10 }}
+                      onClick={() => add({ model_id: undefined, max_attempts: 2 })}
+                    >
+                      添加备用图片模型
+                    </Button>
+                  </div>
+                )}
+              </Form.List>
             ) : null}
           </>
         ) : null}

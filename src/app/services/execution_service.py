@@ -355,6 +355,14 @@ def _image_card_meta(execution) -> Optional[Dict[str, Any]]:
         "推送成功数": push_success_count,
         "推送总数": len(push_records),
         "图片列表": images,
+        "内容块列表": [
+            {
+                "序号": item.get("index"),
+                "摘要": str(item.get("text") or ""),
+            }
+            for item in (data.get("blocks_preview") if isinstance(data.get("blocks_preview"), list) else [])
+            if isinstance(item, dict)
+        ],
     }
     if skipped:
         result["跳过原因"] = str(data.get("skip_reason") or "本次没有符合条件的生图内容")
@@ -367,9 +375,12 @@ def _image_card_item(item: Dict[str, Any], fallback_size: Any) -> Dict[str, Any]
     if not actual_size and item.get("actual_width") and item.get("actual_height"):
         actual_size = f"{item['actual_width']}x{item['actual_height']}"
     webhooks = item.get("webhooks") if isinstance(item.get("webhooks"), list) else []
+    attempts = item.get("model_attempts") if isinstance(item.get("model_attempts"), list) else []
     return {
         "序号": item.get("image_index"),
         "生成状态": _DELIVERY_STATUS_LABELS.get(str(item.get("status") or "success"), str(item.get("status") or "-")),
+        "使用模型": str(item.get("image_model_name") or "-"),
+        "模型尝试次数": len(attempts) if attempts else None,
         "请求尺寸": requested_size,
         "实际尺寸": str(actual_size) if actual_size else "-",
         "文件大小": _format_bytes(item.get("size_bytes")),

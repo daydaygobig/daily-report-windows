@@ -36,6 +36,7 @@ from ..services import alert_service, chat_record_service, disk_monitor_service
 from ..services.github_view_url import build_view_url
 from ..services import image_card_service, topic_card_service
 from ..schemas.webhook import CARD_COLOR_OPTIONS
+from ..utils import qr_overlay
 from ..utils.interval_schedule import build_daily_interval_plans as build_shared_interval_plans
 from ..utils.interval_schedule import compute_next_interval_plan as compute_shared_interval_plan
 from ..utils import message_stats as message_stats_utils
@@ -137,6 +138,150 @@ class AIOutputValidationError(RuntimeError):
 
 
 EMPTY_CHATLOG_ERROR_MESSAGE = "聊天记录多次拉取为空，疑似指定时间段内无聊天信息"
+
+# 上游日报注入：卡片任务只认这个时间窗内成功完成的日报，防止把几天前的话题清单塞进今天的聊天记录。
+UPSTREAM_MAX_AGE_HOURS = 24
+UPSTREAM_MAX_TOPICS = 12
+
+_TOPIC_HEADING_TAGS = ("h2", "h3", "h4")
+
+
+def _resolve_card_input_source(task: Task) -> str:
+    """卡片任务输入来源：report=纯日报内容模式，其余（含缺失/非法值）一律回落聊天记录模式。"""
+    source = (getattr(task, "card_input_source", None) or "chatlog").strip()
+    return "report" if source == "report" else "chatlog"
+
+
+def _extract_report_topic_titles(summary: str) -> List[str]:
+    """从上游日报输出中提取深度话题标题：HTML 日报取 h4（buildToc 目录同源），markdown 标题兜底。"""
+    if not summary:
+        return []
+    titles: List[str] = []
+    for raw in re.findall(r"<h4[^>]*>(.*?)</h4>", summary, flags=re.DOTALL | re.IGNORECASE):
+        text = re.sub(r"<[^>]+>", "", raw)
+        text = re.sub(r"\s+", " ", text).strip()
+        if text:
+            titles.append(text)
+    if not titles:
+        for line in summary.splitlines():
+            match = re.match(r"^#{3,4}\s+(.+?)\s*$", line)
+            if not match:
+                continue
+            text = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+            if text:
+                titles.append(text)
+    deduped: List[str] = []
+    for title in titles:
+        if title not in deduped:
+            deduped.append(title)
+    return deduped[:UPSTREAM_MAX_TOPICS]
+
+
+def _extract_report_topic_sections(summary: str) -> List[Dict[str, Any]]:
+    """从上游日报输出中提取深度话题的标题与正文（纯日报内容模式的输入）。
+
+    HTML 日报按 h4 切分话题、逐块转纯文本；markdown 日报按 ###/#### 标题兜底。
+    返回 [{"title": str, "lines": List[str]}]，提取不到时返回空列表。
+    """
+    if not summary:
+        return []
+    if "<h4" in summary.lower():
+        sections = _extract_topic_sections_from_html(summary)
+        if sections:
+            return sections
+    return _extract_topic_sections_from_markdown(summary)
+
+
+def _extract_topic_sections_from_html(summary: str) -> List[Dict[str, Any]]:
+    soup = BeautifulSoup(summary, "html5lib")
+    headings = soup.find_all(list(_TOPIC_HEADING_TAGS))
+    if not headings:
+        return []
+    # 定位「职通时刻・深度话题」栏目（栏目标题可能是 h2 或 h3），只取该栏目内的 h4；
+    # 找不到栏目时退回全部 h4（与标题提取同源）
+    topic_heads: List[Any] = []
+    scope_index: Optional[int] = None
+    for index, el in enumerate(headings):
+        if el.name in ("h2", "h3"):
+            text = re.sub(r"\s+", " ", el.get_text(" ", strip=True))
+            if "深度话题" in text or "职通时刻" in text:
+                scope_index = index
+                break
+    if scope_index is None:
+        topic_heads = [el for el in headings if el.name == "h4"]
+    else:
+        for el in headings[scope_index + 1 :]:
+            if el.name in ("h2", "h3"):
+                break
+            if el.name == "h4":
+                topic_heads.append(el)
+    sections: List[Dict[str, Any]] = []
+    for head in topic_heads:
+        title = re.sub(r"\s+", " ", head.get_text(" ", strip=True)).strip()
+        sections.append({"title": title, "lines": _html_topic_body_lines(head)})
+    return [s for s in sections if s["title"] or s["lines"]]
+
+
+def _html_topic_body_lines(head: Any) -> List[str]:
+    """收集一个 h4 话题标题到下一个标题之间的正文，按块级元素转成文本行。"""
+    lines: List[str] = []
+    for el in head.next_elements:
+        name = getattr(el, "name", None)
+        if name in _TOPIC_HEADING_TAGS:
+            break
+        if not name:
+            continue
+        if name == "div":
+            cls = " ".join(el.get("class") or [])
+            if "content-preview" in cls or "content-full" in cls:
+                # 日报「详细内容」正文没有 p/li 结构，用 <b>/<br> 组织，按 <br> 断行提取
+                inner = re.sub(r"<br\s*/?>", "\n", el.decode_contents(), flags=re.IGNORECASE)
+                for chunk in inner.split("\n"):
+                    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", chunk)).strip()
+                    if text and text not in lines:
+                        lines.append(text)
+            continue
+        if name not in ("p", "li", "blockquote", "h5"):
+            continue
+        if name == "p" and el.find_parent("blockquote"):
+            # blockquote 整体捕获，跳过其内部段落避免重复
+            continue
+        if name == "li" and el.find_parent("li"):
+            # 嵌套列表只保留最外层条目
+            continue
+        text = re.sub(r"\s+", " ", el.get_text(" ", strip=True)).strip()
+        if not text:
+            continue
+        prefix = ""
+        if name == "li":
+            prefix = "- "
+        elif name == "blockquote":
+            prefix = "> "
+        line = prefix + text
+        if line not in lines:
+            lines.append(line)
+    return lines
+
+
+def _extract_topic_sections_from_markdown(summary: str) -> List[Dict[str, Any]]:
+    sections: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+    for raw in summary.splitlines():
+        match = re.match(r"^(#{2,6})\s+(.+?)\s*$", raw)
+        if match:
+            level = len(match.group(1))
+            title = re.sub(r"<[^>]+>", "", match.group(2)).strip()
+            if level <= 2:
+                # 栏目标题：离开当前栏目
+                current = None
+                continue
+            # 与标题提取同源：###/#### 都视为话题标题
+            current = {"title": title, "lines": []}
+            sections.append(current)
+            continue
+        if current is not None and raw.strip():
+            current["lines"].append(raw.strip())
+    return [s for s in sections if s["title"] or s["lines"]]
 
 
 class SchedulerService:
@@ -275,7 +420,7 @@ class SchedulerService:
         try:
             await disk_monitor_service.run_scheduled_inspection(inspection_job_id)
         except Exception:
-            logger.exception("执行磁盘巡检任务失败 inspection_job_id=%s", inspection_job_id)
+            logger.exception("执行磁盘巡检任务失败 inspection_job_id={}", inspection_job_id)
         finally:
             with session_scope() as db:
                 inspection_job = (
@@ -334,21 +479,21 @@ class SchedulerService:
             with session_scope() as db:
                 await ima_sync_service.run_auto_sync_job(db, sync_job_id)
         except Exception:
-            logger.exception("执行 IMA 同步作业失败 sync_job_id=%s", sync_job_id)
+            logger.exception("执行 IMA 同步作业失败 sync_job_id={}", sync_job_id)
 
     def _schedule_job(self, job: Job) -> Optional[datetime]:
         existing = self.scheduler.get_job(f"job-{job.id}")
         if existing:
             existing.remove()
         if not job.is_enabled or not self._is_within_active_range(job):
-            logger.info("Job %s (%s) is outside active range or disabled", job.id, job.name)
+            logger.info("Job {} ({}) is outside active range or disabled", job.id, job.name)
             job.next_run_at = None
             return None
 
         if job.interval_enabled:
             plan = self._compute_next_interval_plan(job)
             if not plan:
-                logger.info("Job %s has no available interval execution plan", job.id)
+                logger.info("Job {} has no available interval execution plan", job.id)
                 job.next_run_at = None
                 return None
             misfire_window = self._calculate_misfire_window(job)
@@ -365,12 +510,12 @@ class SchedulerService:
             )
             next_local = plan.fire_time.astimezone(self._tz).replace(tzinfo=None)
             job.next_run_at = next_local
-            logger.info("Scheduled interval job %s next run at %s", job.id, next_local)
+            logger.info("Scheduled interval job {} next run at {}", job.id, next_local)
             return next_local
 
         trigger = self._build_trigger(job)
         if not trigger:
-            logger.warning("Job %s has invalid schedule", job.id)
+            logger.warning("Job {} has invalid schedule", job.id)
             job.next_run_at = None
             return None
         misfire_window = self._calculate_misfire_window(job)
@@ -385,12 +530,12 @@ class SchedulerService:
             max_instances=1,
         )
         execution_time_str = job.execution_time or job.start_time
-        logger.info("Scheduled job %s (%s) execution_time=%s", job.id, job.name, execution_time_str)
+        logger.info("Scheduled job {} ({}) execution_time={}", job.id, job.name, execution_time_str)
         next_run = aps_job.next_run_time
         if next_run:
             next_local = next_run.astimezone(self._tz).replace(tzinfo=None)
             job.next_run_at = next_local
-            logger.info("Job %s next run at %s (local time)", job.id, next_local)
+            logger.info("Job {} next run at {} (local time)", job.id, next_local)
         else:
             job.next_run_at = None
         return job.next_run_at
@@ -443,29 +588,37 @@ class SchedulerService:
             return max_retry * interval + interval
         return max(interval * 2, 300)
 
-    async def run_job_immediately(self, job_id: int) -> Optional[int]:
+    async def run_job_immediately(
+        self, job_id: int, selected_topic: Optional[str] = None
+    ) -> Optional[int]:
         """Trigger a job execution and wait for completion."""
-        return await self._run_job(job_id, is_manual=True)
+        return await self._run_job(job_id, is_manual=True, selected_topic=selected_topic)
 
-    async def _run_job(self, job_id: int, is_manual: bool = False, window_override: Optional[dict] = None) -> Optional[int]:
-        logger.info("Running job %s", job_id)
+    async def _run_job(
+        self,
+        job_id: int,
+        is_manual: bool = False,
+        window_override: Optional[dict] = None,
+        selected_topic: Optional[str] = None,
+    ) -> Optional[int]:
+        logger.info("Running job {}", job_id)
         execution_id: Optional[int] = None
         with session_scope() as db:
             job = job_repo.get_by_id(db, job_id)
             if not job or not job.is_enabled:
-                logger.warning("Job %s not found or disabled", job_id)
+                logger.warning("Job {} not found or disabled", job_id)
                 return None
             if not self._is_within_active_range(job):
-                logger.info("Job %s is outside active range, skipping execution", job_id)
+                logger.info("Job {} is outside active range, skipping execution", job_id)
                 return None
             task = job.task
             if not task or not task.is_active:
-                logger.warning("Task for job %s is inactive", job_id)
+                logger.warning("Task for job {} is inactive", job_id)
                 return None
             talkers = _parse_str_list(task.talkers)
             stored_names = _parse_str_list(getattr(task, "talker_names", None))
             if not talkers:
-                logger.error("Task %s has no talkers configured", task.id)
+                logger.error("Task {} has no talkers configured", task.id)
                 alert_service.create_alert(
                     db,
                     task_id=task.id,
@@ -508,7 +661,7 @@ class SchedulerService:
             try:
                 disk_io_context = disk_monitor_service.start_execution_io(db, execution=execution, task=task, job=job)
             except Exception:
-                logger.exception("磁盘 IO 开始采样失败 execution_id=%s", execution.id)
+                logger.exception("磁盘 IO 开始采样失败 execution_id={}", execution.id)
                 disk_io_context = None
             chat_record_telemetry: dict[str, Any] = {}
             try:
@@ -522,17 +675,25 @@ class SchedulerService:
                     execution.error_msg = None
                     try:
                         time_window = self._calculate_time_window(job, window_override=window_override, is_manual=is_manual)
-                        chatlog_text = await self._collect_chatlog(talkers, time_window, telemetry=chat_record_telemetry)
-                        if not chatlog_text.strip():
-                            raise RuntimeError(EMPTY_CHATLOG_ERROR_MESSAGE)
+                        card_input_source = _resolve_card_input_source(task)
+                        report_content_meta: Optional[Dict[str, Any]] = None
+                        if card_input_source == "report":
+                            # 纯日报内容模式：不拉聊天记录，直接用上游日报话题全文作为模型输入
+                            chatlog_text, report_content_meta = self._load_upstream_report_content(db, task)
+                        else:
+                            chatlog_text = await self._collect_chatlog(talkers, time_window, telemetry=chat_record_telemetry)
+                            if not chatlog_text.strip():
+                                raise RuntimeError(EMPTY_CHATLOG_ERROR_MESSAGE)
 
-                        chatlog_artifacts = self._store_chatlog_backup(task, job, execution, chatlog_text, time_window)
-                        if chatlog_artifacts:
-                            primary = chatlog_artifacts[0].get("path")
-                            if primary:
-                                execution.chatlog_path = primary
-                            exported_files.extend(chatlog_artifacts)
-                        stats_needed = self._should_compute_message_stats(task, job)
+                            chatlog_artifacts = self._store_chatlog_backup(task, job, execution, chatlog_text, time_window)
+                            if chatlog_artifacts:
+                                primary = chatlog_artifacts[0].get("path")
+                                if primary:
+                                    execution.chatlog_path = primary
+                                exported_files.extend(chatlog_artifacts)
+                        stats_needed = (
+                            card_input_source != "report" and self._should_compute_message_stats(task, job)
+                        )
                         message_stats_result = (
                             message_stats_utils.compute_message_stats(chatlog_text) if stats_needed else None
                         )
@@ -591,8 +752,10 @@ class SchedulerService:
                             execution.deploy_error = None
                             execution.github_config_id = None
                             if attempt > 1:
-                                logger.info("Job %s 在第 %s 次重试后成功", job.id, attempt)
+                                logger.info("Job {} 在第 {} 次重试后成功", job.id, attempt)
                             break
+                        # 阶段性提交：释放 SQLite 写事务，避免长事务阻塞其他作业与页面写入。
+                        db.commit()
                         system_instruction_for_usage: Optional[str] = None
                         system_instruction_text = self._build_system_instruction(
                             task,
@@ -604,6 +767,34 @@ class SchedulerService:
                         system_instruction_for_usage = system_instruction_text
                         html_required = self._job_requires_html_output(job)
                         allow_outer_retry = False
+                        if card_input_source == "report":
+                            # 纯日报内容模式：话题全文已是模型输入本身，无需再注入标题清单
+                            upstream_suffix = ""
+                            if report_content_meta:
+                                prompt_meta["upstream_report"] = report_content_meta
+                                logger.info(
+                                    "Job {} 纯日报内容模式：已载入 {} 个话题（来源执行 {}）",
+                                    job.id,
+                                    report_content_meta.get("topic_count"),
+                                    report_content_meta.get("upstream_execution_id"),
+                                )
+                        else:
+                            upstream_suffix, upstream_meta = self._build_upstream_topic_injection(db, task)
+                            if upstream_meta:
+                                prompt_meta["upstream_report"] = upstream_meta
+                                if upstream_meta.get("injected"):
+                                    logger.info(
+                                        "Job {} 上游日报注入：已注入 {} 个话题（来源执行 {}）",
+                                        job.id,
+                                        upstream_meta["topic_count"],
+                                        upstream_meta.get("upstream_execution_id"),
+                                    )
+                                else:
+                                    logger.warning(
+                                        "Job {} 上游日报注入：未注入（{}）",
+                                        job.id,
+                                        upstream_meta.get("reason"),
+                                    )
                         ai_result = await self._generate_summary_with_model_sequence(
                             db=db,
                             task=task,
@@ -615,6 +806,7 @@ class SchedulerService:
                             message_stats_result=message_stats_result,
                             html_required=html_required,
                             max_ai_requests=attempts,
+                            extra_prompt=upstream_suffix,
                         )
                         summary = ai_result.summary
                         prompt_tokens = ai_result.prompt_tokens
@@ -622,7 +814,11 @@ class SchedulerService:
                         prompt_meta.update(ai_result.prompt_meta)
                         usage_stats = compute_prompt_usage(task.prompt, system_instruction_for_usage or "", chatlog_text)
                         execution.raw_request = json.dumps(prompt_meta, ensure_ascii=False)
-                        execution.status = "success"
+                        # 卡片任务（topic_card/image_card）的生图与推送耗时很长，此时保持 running，
+                        # 待 _handle_*_result 完成后再置 success；否则进程中途重启会留下
+                        # 「显示成功但从未推送」的执行记录。
+                        card_task = getattr(task, "task_type", "report") in ("topic_card", "image_card")
+                        execution.status = "running" if card_task else "success"
                         execution.summary_md = summary
                         summary_snapshot = summary
                         execution.summary_path = None
@@ -651,6 +847,8 @@ class SchedulerService:
                             final_completion_tokens = count_tokens(summary_snapshot)
                         execution.completion_tokens = final_completion_tokens
                         execution.llm_model_name = ai_result.model.provider if ai_result.model else None
+                        # 阶段性提交：生成结果先落库并释放写事务，后续推送/生图阶段不再长期持锁。
+                        db.commit()
                         if getattr(task, "task_type", "report") == "topic_card":
                             summary = await self._handle_topic_card_result(
                                 db=db,
@@ -658,6 +856,7 @@ class SchedulerService:
                                 job=job,
                                 execution=execution,
                                 raw_response=summary_snapshot or "",
+                                selected_topic=selected_topic,
                             )
                             summary_snapshot = summary
                             execution.summary_md = summary
@@ -678,7 +877,9 @@ class SchedulerService:
                             if message_stats_github_artifact:
                                 exported_files.append(message_stats_github_artifact)
                             if attempt > 1:
-                                logger.info("Job %s 在第 %s 次重试后成功", job.id, attempt)
+                                logger.info("Job {} 在第 {} 次重试后成功", job.id, attempt)
+                            execution.status = "success"
+                            db.commit()
                             break
                         if getattr(task, "task_type", "report") == "image_card":
                             await self._handle_image_card_result(
@@ -687,6 +888,7 @@ class SchedulerService:
                                 job=job,
                                 execution=execution,
                                 raw_response=summary_snapshot or "",
+                                selected_topic=selected_topic,
                             )
                             execution.html_backup_path = None
                             execution.deploy_status = "none"
@@ -704,7 +906,9 @@ class SchedulerService:
                             if message_stats_github_artifact:
                                 exported_files.append(message_stats_github_artifact)
                             if attempt > 1:
-                                logger.info("Job %s 在第 %s 次重试后成功", job.id, attempt)
+                                logger.info("Job {} 在第 {} 次重试后成功", job.id, attempt)
+                            execution.status = "success"
+                            db.commit()
                             break
                         html_plan: Optional[HtmlArtifactPlan] = None
                         html_content: Optional[str] = None
@@ -852,7 +1056,8 @@ class SchedulerService:
                                 label="飞书推送",
                             )
                         if attempt > 1:
-                            logger.info("Job %s 在第 %s 次重试后成功", job.id, attempt)
+                            logger.info("Job {} 在第 {} 次重试后成功", job.id, attempt)
+                        db.commit()
                         break
                     except asyncio.CancelledError as exc:
                         db.rollback()
@@ -882,7 +1087,7 @@ class SchedulerService:
                             if message_stats_result:
                                 fallback_meta["message_count"] = message_stats_result.total_messages
                             execution.raw_request = json.dumps(fallback_meta, ensure_ascii=False)
-                        logger.warning("Job %s 执行被取消: %s", job.id, exc)
+                        logger.warning("Job {} 执行被取消: {}", job.id, exc)
                         raise
                     except Exception as exc:  # pragma: no cover - protect scheduler
                         db.rollback()
@@ -895,7 +1100,7 @@ class SchedulerService:
                         execution.chatlog_path = execution.chatlog_path or chatlog_path
                         if allow_outer_retry and attempt <= max_retry:
                             logger.warning(
-                                "Job %s 第 %s/%s 次执行失败，将在 %s 秒后重试: %s",
+                                "Job {} 第 {}/{} 次执行失败，将在 {} 秒后重试: {}",
                                 job.id,
                                 attempt,
                                 attempts,
@@ -934,7 +1139,7 @@ class SchedulerService:
                             payload={"job_id": job.id},
                         )
                         await self._notify_alert_webhooks(db, task, job, execution.error_msg)
-                        logger.exception("Job %s failed finally", job.id)
+                        logger.exception("Job {} failed finally", job.id)
                         break
             finally:
                 execution.finished_at = datetime.now(tz=self._tz).replace(tzinfo=None)
@@ -956,7 +1161,7 @@ class SchedulerService:
                         chat_record_telemetry=chat_record_telemetry,
                     )
                 except Exception:
-                    logger.exception("记录磁盘 IO 失败 execution_id=%s", execution.id)
+                    logger.exception("记录磁盘 IO 失败 execution_id={}", execution.id)
                 if disk_record:
                     await self._handle_job_disk_alert(
                         db=db,
@@ -1158,7 +1363,7 @@ class SchedulerService:
             weekdays = _load_weekdays(job.weekdays)
             return weekday in weekdays if weekdays else True
         if job.schedule_type == "custom_cron":
-            logger.warning("作业 %s 使用自定义 Cron，跳过按间隔执行", job.id)
+            logger.warning("作业 {} 使用自定义 Cron，跳过按间隔执行", job.id)
             return False
         return True
 
@@ -1198,7 +1403,7 @@ class SchedulerService:
 
         parsed = self._parse_time_range(time_range)
         if not parsed:
-            logger.warning("Job %s time_range parse failed: %s", job.id, time_range)
+            logger.warning("Job {} time_range parse failed: {}", job.id, time_range)
             return None
         return parsed
 
@@ -1225,7 +1430,7 @@ class SchedulerService:
         start_dt = start_dt.replace(tzinfo=self._tz).astimezone(self._tz).replace(tzinfo=None)
         end_dt = end_dt.replace(tzinfo=self._tz).astimezone(self._tz).replace(tzinfo=None)
         if end_dt <= start_dt:
-            logger.warning("Invalid time range %s <= %s", end_dt, start_dt)
+            logger.warning("Invalid time range {} <= {}", end_dt, start_dt)
             return None
         return {
             "start": start_dt,
@@ -1347,6 +1552,34 @@ class SchedulerService:
             raise RuntimeError("任务未绑定模型")
         return sequence
 
+    def _resolve_image_model_sequence(self, db, task: Task) -> List[ModelSequenceItem]:
+        raw_sequence = getattr(task, "image_model_sequence", None)
+        items: list[dict[str, Any]] = []
+        if raw_sequence:
+            try:
+                parsed = json.loads(raw_sequence) if isinstance(raw_sequence, str) else raw_sequence
+                if isinstance(parsed, list):
+                    items = [item for item in parsed if isinstance(item, dict)]
+            except json.JSONDecodeError:
+                items = []
+        if not items and getattr(task, "image_model_id", None):
+            items = [{"model_id": task.image_model_id, "max_attempts": 2}]
+        sequence: List[ModelSequenceItem] = []
+        for item in items:
+            model_id = int(item.get("model_id") or 0)
+            if model_id <= 0:
+                continue
+            model = db.query(Model).filter(Model.id == model_id).first()
+            if not model:
+                raise RuntimeError(f"图片模型不存在：{model_id}")
+            if (getattr(model, "model_type", "text") or "text") != "image":
+                raise RuntimeError(f"所选模型不是图片模型：{model.provider}")
+            max_attempts = max(int(item.get("max_attempts") or 2), 1)
+            sequence.append(ModelSequenceItem(model=model, max_attempts=max_attempts))
+        if not sequence:
+            raise RuntimeError("任务未绑定图片模型")
+        return sequence
+
     async def _generate_summary_with_model_sequence(
         self,
         *,
@@ -1360,6 +1593,7 @@ class SchedulerService:
         message_stats_result: Optional[message_stats_utils.MessageStats],
         html_required: bool,
         max_ai_requests: int,
+        extra_prompt: str = "",
     ) -> AiSummaryResult:
         sequence = self._resolve_model_sequence(db, task)
         attempt_meta: list[dict[str, Any]] = []
@@ -1372,7 +1606,7 @@ class SchedulerService:
                 requests_used += 1
                 model = entry.model
                 try:
-                    prompt = self._compose_prompt(task.prompt, system_instruction_text, chatlog_text)
+                    prompt = self._compose_prompt(task.prompt + extra_prompt, system_instruction_text, chatlog_text)
                     summary, prompt_tokens, completion_tokens = await self._invoke_llm(model, prompt)
                     prompt_meta = {
                         "chunked": False,
@@ -1417,7 +1651,7 @@ class SchedulerService:
                         }
                     )
                     logger.warning(
-                        "Job %s 模型 %s 第 %s 次 AI 请求失败（总请求 %s/%s）：%s",
+                        "Job {} 模型 {} 第 {} 次 AI 请求失败（总请求 {}/{}）：{}",
                         job.id,
                         getattr(entry.model, "provider", None),
                         model_attempts,
@@ -1557,6 +1791,115 @@ class SchedulerService:
                 lines += ["", f"HTML 备份已保存至：{backup_path}"]
         return "\n".join(lines)
 
+    def _load_upstream_report_content(self, db, task: Task) -> Tuple[str, Dict[str, Any]]:
+        """纯日报内容模式：载入上游日报最近一次成功执行的话题全文，作为卡片任务的 LLM 输入。
+
+        与标题注入不同，日报全文是该模式下模型的唯一事实来源，任何环节缺失都直接抛错
+        （任务失败、不回退聊天记录）。
+        """
+        upstream_id = getattr(task, "upstream_task_id", None)
+        if not upstream_id:
+            raise ValueError("纯日报内容模式的卡片任务必须绑定上游日报任务")
+        upstream_task = db.query(Task).filter(Task.id == int(upstream_id)).first()
+        if not upstream_task:
+            raise ValueError("纯日报内容模式绑定的上游日报任务不存在")
+        execution = (
+            db.query(Execution)
+            .filter(
+                Execution.task_id == upstream_task.id,
+                Execution.status == "success",
+                Execution.finished_at.isnot(None),
+            )
+            .order_by(Execution.finished_at.desc())
+            .first()
+        )
+        if not execution:
+            raise ValueError(f"上游日报任务「{upstream_task.name}」还没有成功生成的日报")
+        finished_at = execution.finished_at
+        age_hours = (datetime.now() - finished_at).total_seconds() / 3600 if finished_at else None
+        if age_hours is None or age_hours > UPSTREAM_MAX_AGE_HOURS:
+            raise ValueError(
+                f"上游日报任务「{upstream_task.name}」最近一次成功日报已超过 {UPSTREAM_MAX_AGE_HOURS} 小时，"
+                "纯日报内容模式拒绝执行"
+            )
+        sections = _extract_report_topic_sections(execution.summary_md or "")[:UPSTREAM_MAX_TOPICS]
+        if not sections:
+            raise ValueError(f"未能从上游日报任务「{upstream_task.name}」的输出中提取到话题内容")
+        blocks = []
+        for index, section in enumerate(sections, start=1):
+            body = "\n".join(section["lines"]).strip()
+            if body:
+                blocks.append(f"### 话题{index}：{section['title']}\n{body}")
+            else:
+                blocks.append(f"### 话题{index}：{section['title']}")
+        finished_text = finished_at.isoformat(sep=" ", timespec="minutes") if finished_at else ""
+        content = (
+            f"以下是漫道日报（任务「{upstream_task.name}」，生成于 {finished_text}）中 "
+            f"{len(sections)} 个深度话题的完整内容，按日报中的顺序排列。\n\n" + "\n\n".join(blocks)
+        )
+        meta = {
+            "mode": "report_content",
+            "upstream_task_id": int(upstream_id),
+            "upstream_execution_id": execution.id,
+            "upstream_finished_at": finished_at.isoformat(sep=" ", timespec="minutes") if finished_at else None,
+            "injected": True,
+            "topics": [section["title"] for section in sections],
+            "topic_count": len(sections),
+        }
+        return content, meta
+
+    def _build_upstream_topic_injection(self, db, task: Task) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """查询上游日报任务最近一次成功执行，产出话题清单提示词后缀与元信息。
+
+        返回 (suffix, meta)：查不到合格上游时 suffix 为空串、meta 记录原因，
+        卡片任务随之自然回退为提示词中的「自行选题」分支。
+        """
+        if getattr(task, "task_type", "report") not in ("topic_card", "image_card"):
+            return "", None
+        upstream_id = getattr(task, "upstream_task_id", None)
+        if not upstream_id:
+            return "", None
+        meta: Dict[str, Any] = {"upstream_task_id": int(upstream_id)}
+        upstream_task = db.query(Task).filter(Task.id == int(upstream_id)).first()
+        if not upstream_task:
+            meta.update({"injected": False, "reason": "上游日报任务不存在"})
+            return "", meta
+        execution = (
+            db.query(Execution)
+            .filter(
+                Execution.task_id == upstream_task.id,
+                Execution.status == "success",
+                Execution.finished_at.isnot(None),
+            )
+            .order_by(Execution.finished_at.desc())
+            .first()
+        )
+        if not execution:
+            meta.update({"injected": False, "reason": "上游任务还没有成功完成的日报"})
+            return "", meta
+        finished_at = execution.finished_at
+        meta["upstream_execution_id"] = execution.id
+        meta["upstream_finished_at"] = finished_at.isoformat(sep=" ", timespec="minutes") if finished_at else None
+        age_hours = (datetime.now() - finished_at).total_seconds() / 3600 if finished_at else None
+        if age_hours is None or age_hours > UPSTREAM_MAX_AGE_HOURS:
+            meta.update({"injected": False, "reason": f"最近一次成功日报已超过 {UPSTREAM_MAX_AGE_HOURS} 小时，不注入"})
+            return "", meta
+        titles = _extract_report_topic_titles(execution.summary_md or "")
+        if not titles:
+            meta.update({"injected": False, "reason": "未能从上游日报中提取到话题标题"})
+            return "", meta
+        meta.update({"injected": True, "topics": titles, "topic_count": len(titles)})
+        numbered = "\n".join(f"{index}. {title}" for index, title in enumerate(titles, start=1))
+        suffix = (
+            "\n\n## 日报话题清单（系统自动注入，本次视为「已提供日报话题清单」）\n\n"
+            f"来源：任务「{upstream_task.name}」于 {meta['upstream_finished_at']} 成功生成的漫道日报，"
+            f"共 {len(titles)} 个深度话题，按日报中的顺序排列：\n"
+            f"{numbered}\n\n"
+            "本次必须按上方「第零步」执行：案例卡片与该清单一一对应，"
+            "话题数量、顺序、标题完全一致，不得增删、合并、拆分或另选话题。"
+        )
+        return suffix, meta
+
     async def _push_feishu(self, webhooks, task: Task, job: Optional[Job], summary: str, *, raise_on_failure: bool = False) -> bool:
         if not webhooks:
             return False
@@ -1576,7 +1919,7 @@ class SchedulerService:
             except Exception as exc:
                 failures.append(str(exc))
                 logger.exception(
-                    "推送飞书失败 webhook_id=%s task=%s job=%s",
+                    "推送飞书失败 webhook_id={} task={} job={}",
                     getattr(webhook, "id", None),
                     task.id,
                     getattr(job, "id", None),
@@ -1596,7 +1939,7 @@ class SchedulerService:
                 if attempt >= total:
                     raise RuntimeError(_format_exception_message(label, exc, attempts=total)) from exc
                 logger.warning(
-                    "%s 第 %s/%s 次失败，将在 %s 秒后重试：%s",
+                    "{} 第 {}/{} 次失败，将在 {} 秒后重试：{}",
                     label,
                     attempt,
                     total,
@@ -1671,6 +2014,7 @@ class SchedulerService:
         job: Job,
         execution: Execution,
         raw_response: str,
+        selected_topic: Optional[str] = None,
     ) -> None:
         max_count = max(int(getattr(job, "max_image_count", 6) or 6), 1)
         blocks = image_card_service.parse_content_blocks(
@@ -1678,6 +2022,18 @@ class SchedulerService:
             split_enabled=bool(getattr(job, "image_split_enabled", False)),
             max_count=max_count,
         )
+        block_total = len(blocks)
+        blocks_preview = [
+            {"index": index, "text": block[:60]} for index, block in enumerate(blocks, start=1)
+        ]
+        if selected_topic:
+            selected_blocks = _select_image_blocks(blocks, selected_topic, job=job)
+            if not selected_blocks:
+                raise RuntimeError(
+                    f"未找到匹配的内容块「{selected_topic}」，"
+                    f"可用内容块：{'; '.join(item['text'] for item in blocks_preview)}"
+                )
+            blocks = selected_blocks
         if not blocks:
             notice = image_card_service.NO_IMAGE_CONTENT_NOTICE
             execution.summary_md = notice
@@ -1709,10 +2065,10 @@ class SchedulerService:
         image_prompt = (getattr(job, "image_prompt", None) or "").strip()
         if not image_prompt:
             raise RuntimeError("图片卡片作业未配置图片提示词模板")
-        image_model_id = int(getattr(task, "image_model_id", 0) or 0)
-        image_model = db.query(Model).filter(Model.id == image_model_id).first()
-        if not image_model or (getattr(image_model, "model_type", "text") or "text") != "image":
-            raise RuntimeError("图片卡片任务未绑定有效的图片模型")
+        image_sequence = self._resolve_image_model_sequence(db, task)
+        head_model = image_sequence[0].model
+        image_model_id = int(getattr(head_model, "id", 0) or 0)
+        image_model = head_model
 
         push_webhook_ids = _parse_int_list(task.push_webhook_ids)
         webhooks = webhook_repo.get_by_ids(db, push_webhook_ids) if push_webhook_ids else []
@@ -1734,8 +2090,15 @@ class SchedulerService:
         meta: Dict[str, Any] = {
             "type": "image_card",
             "block_count": len(blocks),
+            "block_total": block_total,
+            "blocks_preview": blocks_preview,
+            "selected_topic": selected_topic,
             "image_model_id": image_model_id,
             "image_model_name": image_model.provider,
+            "image_model_sequence": [
+                {"model_id": entry.model.id, "model_name": entry.model.provider, "max_attempts": entry.max_attempts}
+                for entry in image_sequence
+            ],
             "image_prompt_template_id": getattr(job, "image_prompt_template_id", None),
             "aspect_ratio": aspect_ratio,
             "resolution": resolution,
@@ -1750,44 +2113,154 @@ class SchedulerService:
         }
         failures: List[Dict[str, Any]] = []
 
+        # 阶段一：逐块生成图片（任一块彻底失败即抛错终止）
+        generated_items: List[Dict[str, Any]] = []
         for index, block in enumerate(blocks, start=1):
-            try:
-                generated = await image_generation.generate_image(
-                    image_model,
-                    prompt=image_card_service.compose_image_prompt(image_prompt, block),
-                    size=image_size,
-                )
-            except Exception as exc:
-                error_message = _format_exception_message("图片生成", exc)
+            image_prompt_text = image_card_service.compose_image_prompt(image_prompt, block)
+            generated = None
+            used_model: Optional[Model] = None
+            image_attempt_meta: List[Dict[str, Any]] = []
+            last_error: Optional[Exception] = None
+            for entry in image_sequence:
+                for attempt in range(1, entry.max_attempts + 1):
+                    try:
+                        generated = await image_generation.generate_image(
+                            entry.model,
+                            prompt=image_prompt_text,
+                            size=image_size,
+                        )
+                        used_model = entry.model
+                        image_attempt_meta.append(
+                            {
+                                "model_id": entry.model.id,
+                                "model_name": entry.model.provider,
+                                "attempt": attempt,
+                                "status": "success",
+                            }
+                        )
+                        break
+                    except Exception as exc:
+                        last_error = exc
+                        image_attempt_meta.append(
+                            {
+                                "model_id": entry.model.id,
+                                "model_name": entry.model.provider,
+                                "attempt": attempt,
+                                "status": "failed",
+                                "error": _format_exception_message("图片生成", exc),
+                            }
+                        )
+                        generated = None
+                if generated is not None:
+                    break
+            if generated is None:
+                error_message = _format_exception_message("图片生成", last_error) if last_error else "图片生成失败"
                 meta["deliveries"].append(
                     {
                         "image_index": index,
                         "status": "failed",
                         "requested_size": image_size,
                         "error": error_message,
+                        "model_attempts": image_attempt_meta,
                         "webhooks": [],
                     }
                 )
                 meta["generation_error"] = {
                     "image_index": index,
                     "error": error_message,
+                    "model_attempts": image_attempt_meta,
                 }
                 execution.raw_response = json.dumps(meta, ensure_ascii=False)
-                raise RuntimeError(f"第 {index} 张图片生成失败：{exc}") from exc
+                raise RuntimeError(f"第 {index} 张图片生成失败：{error_message}") from last_error
+            generated_items.append(
+                {
+                    "block_index": index,
+                    "image": generated,
+                    "model": used_model,
+                    "attempts": image_attempt_meta,
+                }
+            )
+
+        # 阶段二：拼卡。1:3 比例下，按生成顺序相邻两张（同一话题的上卡+下卡）上下拼接成
+        # 一张长图。拼接由代码完成（像素级对齐），不依赖生图模型输出可拼接的图。
+        stitch_pairs = aspect_ratio == "1:3" and len(generated_items) > 1
+        final_images: List[Dict[str, Any]] = []
+        if stitch_pairs:
+            for start in range(0, len(generated_items), 2):
+                group = generated_items[start : start + 2]
+                merged_content = await asyncio.to_thread(
+                    image_card_service.stitch_images_vertically,
+                    [item["image"].content for item in group],
+                )
+                final_images.append(
+                    {
+                        "parts": [item["block_index"] for item in group],
+                        "image": image_generation.GeneratedImage(content=merged_content),
+                        "models": [item["model"] for item in group],
+                        "attempts": [item["attempts"] for item in group],
+                    }
+                )
+            meta["stitch"] = {
+                "enabled": True,
+                "mode": "vertical_pair",
+                "pairs": [item["parts"] for item in final_images],
+            }
+        else:
+            if aspect_ratio == "1:3":
+                meta["stitch"] = {"enabled": False, "reason": "内容块不足两张，按单卡输出"}
+            for item in generated_items:
+                final_images.append(
+                    {
+                        "parts": [item["block_index"]],
+                        "image": item["image"],
+                        "models": [item["model"]],
+                        "attempts": [item["attempts"]],
+                    }
+                )
+
+        # 阶段三：二维码叠加（叠加在拼接后的成图上，每张长图一个码）
+        for position, item in enumerate(final_images, start=1):
+            generated = item["image"]
+            qr_overlay_applied = False
+            if settings.qr_code_enabled and settings.qr_code_url:
+                try:
+                    overlaid = await asyncio.to_thread(
+                        qr_overlay.apply_qr_overlay,
+                        generated.content,
+                        url=settings.qr_code_url,
+                        caption=settings.qr_code_caption,
+                        size_ratio=settings.qr_code_size_ratio,
+                    )
+                    generated = image_generation.GeneratedImage(
+                        content=overlaid.content,
+                        mime_type=overlaid.mime_type,
+                        revised_prompt=generated.revised_prompt,
+                    )
+                    qr_overlay_applied = True
+                except Exception as exc:
+                    logger.warning(
+                        "案例卡二维码叠加失败，使用原图推送：{}",
+                        _format_exception_message("二维码叠加", exc),
+                    )
 
             actual_dimensions = image_generation.detect_image_dimensions(generated.content, generated.mime_type)
             actual_width = actual_dimensions[0] if actual_dimensions else None
             actual_height = actual_dimensions[1] if actual_dimensions else None
             actual_size = f"{actual_width}x{actual_height}" if actual_dimensions else None
             image_meta: Dict[str, Any] = {
-                "image_index": index,
+                "image_index": position,
+                "parts": item["parts"],
                 "status": "success",
                 "requested_size": image_size,
+                "image_model_id": item["models"][0].id if item["models"] and item["models"][0] else None,
+                "image_model_name": item["models"][0].provider if item["models"] and item["models"][0] else None,
+                "model_attempts": [attempt for sub in item["attempts"] for attempt in sub],
                 "actual_width": actual_width,
                 "actual_height": actual_height,
                 "actual_size": actual_size,
                 "size_bytes": generated.size_bytes,
                 "mime_type": generated.mime_type,
+                "qr_code_overlay": qr_overlay_applied,
                 "webhooks": [],
             }
             for webhook, app_id, app_secret in webhook_credentials:
@@ -1802,7 +2275,7 @@ class SchedulerService:
                         app_id=app_id,
                         app_secret=app_secret,
                         image_bytes=generated.content,
-                        filename=f"image-card-{index}.png",
+                        filename=f"image-card-{position}.png",
                         retries=max_retry,
                         retry_interval=retry_interval,
                         label="图片卡片推送",
@@ -1813,7 +2286,7 @@ class SchedulerService:
                     delivery.update({"status": "failed", "error": error_message})
                     failures.append(
                         {
-                            "image_index": index,
+                            "image_index": position,
                             "webhook_id": getattr(webhook, "id", None),
                             "webhook_name": getattr(webhook, "name", None),
                             "error": error_message,
@@ -1861,6 +2334,7 @@ class SchedulerService:
         job: Job,
         execution: Execution,
         raw_response: str,
+        selected_topic: Optional[str] = None,
     ) -> str:
         push_webhook_ids = _parse_int_list(task.push_webhook_ids)
         webhooks = webhook_repo.get_by_ids(db, push_webhook_ids) if push_webhook_ids else []
@@ -1882,6 +2356,16 @@ class SchedulerService:
             raise RuntimeError(f"话题卡片 JSON 解析失败：{exc}") from exc
 
         meta["cards"] = cards
+        if selected_topic:
+            all_cards = cards
+            cards = _filter_cards_by_topic(all_cards, selected_topic)
+            meta["selected_topic"] = selected_topic
+            meta["selected_cards"] = cards
+            if not cards:
+                titles = [str(card.get("title") or "") for card in all_cards]
+                raise RuntimeError(
+                    f"未找到匹配话题「{selected_topic}」，本次可用话题：{'; '.join(t for t in titles if t)}"
+                )
         if not cards:
             summary = "本时段无职场话题讨论"
             meta["skipped"] = "empty_cards"
@@ -2064,7 +2548,7 @@ class SchedulerService:
             disk_record.job_alert_sent = sent
             disk_record.job_alert_error = None if sent else "all webhook deliveries failed"
         except Exception as exc:
-            logger.exception("推送作业磁盘告警失败 task=%s job=%s execution=%s", task.id, job.id, execution.id)
+            logger.exception("推送作业磁盘告警失败 task={} job={} execution={}", task.id, job.id, execution.id)
             disk_record.job_alert_sent = False
             disk_record.job_alert_error = str(exc)
         db.add(disk_record)
@@ -2120,7 +2604,7 @@ class SchedulerService:
         try:
             await self._push_feishu(webhooks=webhooks, task=task, job=job, summary=summary)
         except Exception:
-            logger.exception("推送告警到飞书失败 task=%s job=%s", task.id, getattr(job, "id", None))
+            logger.exception("推送告警到飞书失败 task={} job={}", task.id, getattr(job, "id", None))
 
     def _ensure_html_document(self, content: str) -> str:
         text = (content or "").lstrip("\ufeff").strip()
@@ -2247,7 +2731,7 @@ class SchedulerService:
                 }
             ]
         except Exception:
-            logger.exception("Failed to store chatlog backup for task %s job %s", task.id, job.id)
+            logger.exception("Failed to store chatlog backup for task {} job {}", task.id, job.id)
             return []
 
     def _store_chatlog_backup_modern(
@@ -2291,7 +2775,7 @@ class SchedulerService:
                 )
             return artifacts
         except Exception:
-            logger.exception("Failed to store chatlog backup for task %s job %s", task.id, job.id)
+            logger.exception("Failed to store chatlog backup for task {} job {}", task.id, job.id)
             return []
 
     def _format_chatlog_for_export(self, chatlog_text: str) -> str:
@@ -2516,7 +3000,7 @@ class SchedulerService:
                 file_paths=valid_paths,
             )
         except Exception as exc:  # pragma: no cover - protect main flow
-            logger.exception("执行后同步到 IMA 失败 execution_id=%s", execution.id)
+            logger.exception("执行后同步到 IMA 失败 execution_id={}", execution.id)
             execution.ima_sync_status = "failed"
             execution.ima_sync_error = str(exc)
             db.add(execution)
@@ -2669,7 +3153,7 @@ class SchedulerService:
             path.write_text(html_content, encoding="utf-8")
             return str(path)
         except Exception:
-            logger.exception("Failed to store HTML backup job=%s execution=%s", job.id, execution.id)
+            logger.exception("Failed to store HTML backup job={} execution={}", job.id, execution.id)
             return None
 
     def _resolve_output_dir(self, configured_path: Optional[str], default_subdir: str | Path) -> Path:
@@ -2889,6 +3373,59 @@ def _load_weekdays(raw: Optional[str]) -> List[int]:
             continue
         result.append(val)
     return result
+
+
+def _filter_cards_by_topic(cards: List[Dict[str, Any]], selected_topic: str) -> List[Dict[str, Any]]:
+    """按话题标题（包含匹配，忽略大小写）或 1 起始序号筛选卡片。"""
+    stripped = selected_topic.strip()
+    if stripped.isdigit():
+        index = int(stripped)
+        if 1 <= index <= len(cards):
+            return [cards[index - 1]]
+    keyword = stripped.lower()
+    return [
+        card
+        for card in cards
+        if keyword in str(card.get("title") or "").strip().lower()
+    ]
+
+
+def _select_image_blocks(
+    blocks: List[str], selected_topic: str, *, job: Job
+) -> List[str]:
+    """按序号（1 起始的内容块序号）或关键词筛选内容块。
+
+    1:3 比例且块数大于 1 时相邻两块拼成一张长图，此时命中任何一块都会
+    返回该块所在的整组（两块），保证生成的是完整的一张长图。
+    """
+    stripped = selected_topic.strip()
+    stitch_pairs = (
+        getattr(job, "image_aspect_ratio", "auto") == "1:3" and len(blocks) > 1
+    )
+    groups: List[List[int]] = (
+        [list(range(start, min(start + 2, len(blocks) + 1))) for start in range(1, len(blocks) + 1, 2)]
+        if stitch_pairs
+        else [[index] for index in range(1, len(blocks) + 1)]
+    )
+    if stripped.isdigit():
+        index = int(stripped)
+        if not 1 <= index <= len(blocks):
+            return []
+        matched_blocks = {index}
+    else:
+        keyword = stripped.lower()
+        matched_blocks = {
+            index
+            for index, block in enumerate(blocks, start=1)
+            if keyword in block.lower()
+        }
+        if not matched_blocks:
+            return []
+    selected_indexes: set = set()
+    for group in groups:
+        if matched_blocks & set(group):
+            selected_indexes.update(group)
+    return [block for index, block in enumerate(blocks, start=1) if index in selected_indexes]
 
 
 def _parse_int_list(raw: Optional[str]) -> List[int]:

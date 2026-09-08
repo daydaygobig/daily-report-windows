@@ -56,6 +56,7 @@ def create_task(db: Session, payload: TaskCreate) -> Task:
         data["system_prompt_custom_enabled"] = False
         data["system_prompt_template"] = None
         data["system_prompt_include_message_count"] = False
+        data["upstream_task_id"] = None
         data.update(_image_task_fields(db, data, target_type="export"))
     else:
         data["model_sequence"] = _normalize_model_sequence(
@@ -64,6 +65,16 @@ def create_task(db: Session, payload: TaskCreate) -> Task:
             fallback_model_id=data.get("model_id"),
         )
         data["model_id"] = data["model_sequence"][0]["model_id"]
+        data["upstream_task_id"] = _normalize_upstream_task(
+            db,
+            upstream_task_id=data.get("upstream_task_id"),
+            task_type=payload.task_type,
+        )
+        data["card_input_source"] = _normalize_card_input_source(
+            data.get("card_input_source"),
+            task_type=payload.task_type,
+            upstream_task_id=data.get("upstream_task_id"),
+        )
         resolved_prompt, template_id = _resolve_prompt_content(
             db,
             prompt=payload.prompt,
@@ -71,6 +82,13 @@ def create_task(db: Session, payload: TaskCreate) -> Task:
         )
         data["prompt"] = resolved_prompt
         data["prompt_template_id"] = template_id
+        if payload.task_type == "image_card":
+            data["image_model_sequence"] = _normalize_image_model_sequence(
+                db,
+                image_model_sequence=data.get("image_model_sequence"),
+                fallback_image_model_id=data.get("image_model_id"),
+            )
+            data["image_model_id"] = data["image_model_sequence"][0]["model_id"]
         data.update(_image_task_fields(db, data, target_type=payload.task_type))
     return task_repo.create_task(db, obj_in=data)
 
@@ -83,11 +101,32 @@ def update_task(db: Session, task_id: int, payload: TaskUpdate) -> Task:
     if "topic_style_config" in obj_in:
         obj_in["topic_style_config"] = topic_card_service.normalize_topic_style_config(obj_in["topic_style_config"])
     target_type = obj_in.get("task_type", entity.task_type)
+    if target_type not in ("topic_card", "image_card"):
+        obj_in["upstream_task_id"] = None
+        obj_in["card_input_source"] = "chatlog"
+    elif "card_input_source" in obj_in:
+        obj_in["card_input_source"] = _normalize_card_input_source(
+            obj_in.get("card_input_source"),
+            task_type=target_type,
+            upstream_task_id=obj_in.get("upstream_task_id", entity.upstream_task_id),
+        )
+    elif "upstream_task_id" in obj_in and (getattr(entity, "card_input_source", "chatlog") or "chatlog") == "report":
+        # 纯日报内容模式下不允许把上游日报解绑（0 表示清除）
+        if obj_in["upstream_task_id"] in (None, 0):
+            raise ValueError("纯日报内容模式的卡片任务必须绑定上游日报任务")
+    elif "upstream_task_id" in obj_in:
+        obj_in["upstream_task_id"] = _normalize_upstream_task(
+            db,
+            upstream_task_id=obj_in.get("upstream_task_id"),
+            task_type=target_type,
+            self_id=task_id,
+        )
     if target_type == "export":
         obj_in["prompt"] = ""
         obj_in["prompt_template_id"] = None
         obj_in["model_id"] = None
         obj_in["model_sequence"] = None
+        obj_in["image_model_sequence"] = None
         obj_in["push_webhook_ids"] = []
         obj_in["system_prompt_custom_enabled"] = False
         obj_in["system_prompt_template"] = None
@@ -100,6 +139,13 @@ def update_task(db: Session, task_id: int, payload: TaskUpdate) -> Task:
                 fallback_model_id=obj_in.get("model_id", entity.model_id),
             )
             obj_in["model_id"] = obj_in["model_sequence"][0]["model_id"]
+        if target_type == "image_card" and ("image_model_sequence" in obj_in or "image_model_id" in obj_in):
+            obj_in["image_model_sequence"] = _normalize_image_model_sequence(
+                db,
+                image_model_sequence=obj_in.get("image_model_sequence"),
+                fallback_image_model_id=obj_in.get("image_model_id", entity.image_model_id),
+            )
+            obj_in["image_model_id"] = obj_in["image_model_sequence"][0]["model_id"]
         if "prompt" in obj_in or "prompt_template_id" in obj_in:
             resolved_prompt, template_id = _resolve_prompt_content(
                 db,
@@ -133,6 +179,45 @@ def get_task(db: Session, task_id: int) -> TaskOut:
     return TaskOut.model_validate(task_dict)
 
 
+def _normalize_upstream_task(
+    db: Session,
+    *,
+    upstream_task_id: Optional[int],
+    task_type: str,
+    self_id: Optional[int] = None,
+) -> Optional[int]:
+    """校验上游日报任务配置；0 或 None 表示清除。"""
+    if upstream_task_id in (None, 0):
+        return None
+    if task_type not in ("topic_card", "image_card"):
+        raise ValueError("只有话题卡片/图片卡片任务可以设置上游日报任务")
+    if self_id is not None and int(upstream_task_id) == int(self_id):
+        raise ValueError("上游日报任务不能是任务本身")
+    upstream = task_repo.get(db, int(upstream_task_id))
+    if not upstream:
+        raise ValueError("上游日报任务不存在")
+    if (getattr(upstream, "task_type", "report") or "report") != "report":
+        raise ValueError("上游任务必须是日报（report）类型")
+    return int(upstream_task_id)
+
+
+def _normalize_card_input_source(
+    value: Optional[str],
+    *,
+    task_type: str,
+    upstream_task_id: Optional[int],
+) -> str:
+    """卡片任务可选纯日报内容模式（不拉聊天记录）；其余任务一律回落聊天记录模式。"""
+    if task_type not in ("topic_card", "image_card"):
+        return "chatlog"
+    source = (value or "chatlog").strip() or "chatlog"
+    if source not in ("chatlog", "report"):
+        raise ValueError(f"卡片输入来源不支持：{source}")
+    if source == "report" and upstream_task_id in (None, 0):
+        raise ValueError("纯日报内容模式的卡片任务必须绑定上游日报任务")
+    return source
+
+
 def _normalize_model_sequence(
     db: Session,
     *,
@@ -164,6 +249,37 @@ def _normalize_model_sequence(
     return normalized
 
 
+def _normalize_image_model_sequence(
+    db: Session,
+    *,
+    image_model_sequence: Optional[List[dict]],
+    fallback_image_model_id: Optional[int],
+) -> List[dict]:
+    raw_items = image_model_sequence or []
+    normalized: List[dict] = []
+    for item in raw_items:
+        if not item:
+            continue
+        if hasattr(item, "model_dump"):
+            item = item.model_dump()
+        model_id = int(item.get("model_id") or 0)
+        if model_id <= 0:
+            continue
+        max_attempts = max(int(item.get("max_attempts") or 2), 1)
+        normalized.append({"model_id": model_id, "max_attempts": max_attempts})
+    if not normalized and fallback_image_model_id:
+        normalized = [{"model_id": int(fallback_image_model_id), "max_attempts": 2}]
+    if not normalized:
+        raise ValueError("图片卡片任务至少需要配置一个图片模型")
+    for item in normalized:
+        model = model_repo.get(db, item["model_id"])
+        if not model:
+            raise ValueError(f"模型不存在：{item['model_id']}")
+        if (getattr(model, "model_type", "text") or "text") != "image":
+            raise ValueError(f"模型不是图片模型：{item['model_id']}")
+    return normalized
+
+
 def _image_task_fields(db: Session, effective: dict, *, target_type: str) -> dict:
     template_id = effective.get("prompt_template_id")
     if template_id:
@@ -176,6 +292,7 @@ def _image_task_fields(db: Session, effective: dict, *, target_type: str) -> dic
     if target_type != "image_card":
         return {
             "image_model_id": None,
+            "image_model_sequence": None,
             "image_split_enabled": False,
             "image_split_prompt": None,
         }
@@ -470,7 +587,7 @@ def _apply_job_feature_settings(obj_in: dict, *, is_update: bool) -> dict:
     ensure_default("topic_image_backup_path", None)
     ensure_default("image_aspect_ratio", "auto")
     ensure_default("image_resolution", "auto")
-    ensure_default("max_image_count", 6)
+    ensure_default("max_image_count", 12)
     ensure_default("disk_alert_enabled", False)
     ensure_default("disk_alert_threshold_bytes", 100 * 1024 * 1024)
 

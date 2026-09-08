@@ -25,6 +25,9 @@ def task_to_dict(task: Task) -> Dict[str, Any]:
     model_sequence = _load_json(getattr(task, "model_sequence", None), default=[])
     if not model_sequence and getattr(task, "model_id", None):
         model_sequence = [{"model_id": task.model_id, "max_attempts": 2}]
+    image_model_sequence = _load_json(getattr(task, "image_model_sequence", None), default=[])
+    if not image_model_sequence and getattr(task, "image_model_id", None):
+        image_model_sequence = [{"model_id": task.image_model_id, "max_attempts": 2}]
     return {
         "id": task.id,
         "name": task.name,
@@ -32,6 +35,9 @@ def task_to_dict(task: Task) -> Dict[str, Any]:
         "prompt": task.prompt,
         "model_id": task.model_id,
         "image_model_id": getattr(task, "image_model_id", None),
+        "upstream_task_id": getattr(task, "upstream_task_id", None),
+        "card_input_source": getattr(task, "card_input_source", None) or "chatlog",
+        "image_model_sequence": image_model_sequence,
         "model_sequence": model_sequence,
         "prompt_template_id": getattr(task, "prompt_template_id", None),
         "talkers": _load_json(task.talkers, default=[]),

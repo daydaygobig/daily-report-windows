@@ -1,5 +1,5 @@
 import React, { useContext, useEffect, useMemo, useState } from "react";
-import { Button, Popconfirm, Space, Table, Tag, Tooltip, message } from "antd";
+import { AutoComplete, Button, Modal, Popconfirm, Space, Table, Tag, Tooltip, message } from "antd";
 import { MenuOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   DragDropContext,
@@ -26,6 +26,7 @@ import {
   reorderJobs
 } from "../services/tasks";
 import { fetchChatrooms } from "../services/chatRecords";
+import { fetchExecutions } from "../services/executions";
 import { formatBeijingDateTime } from "../utils/datetime";
 
 const DragHandleContext = React.createContext<DraggableProvidedDragHandleProps | null>(null);
@@ -188,7 +189,8 @@ function TasksPage() {
   });
 
   const runJobMutation = useMutation({
-    mutationFn: (jobId: number) => runJobRequest(jobId),
+    mutationFn: ({ jobId, selectedTopic }: { jobId: number; selectedTopic?: string }) =>
+      runJobRequest(jobId, selectedTopic),
     onSuccess: () => {
       invalidateTasks();
       message.success("作业执行完成");
@@ -289,13 +291,70 @@ function TasksPage() {
 
   const [runningJobId, setRunningJobId] = useState<number | null>(null);
 
-  const handleRunJob = async (jobId: number) => {
+  const handleRunJob = async (jobId: number, selectedTopic?: string) => {
     try {
       setRunningJobId(jobId);
-      await runJobMutation.mutateAsync(jobId);
+      await runJobMutation.mutateAsync({ jobId, selectedTopic });
     } finally {
       setRunningJobId(null);
     }
+  };
+
+  const [topicRunState, setTopicRunState] = useState<{
+    open: boolean;
+    jobId: number | null;
+    taskType?: Task["task_type"];
+  }>({
+    open: false,
+    jobId: null
+  });
+  const [selectedTopic, setSelectedTopic] = useState("");
+  const [topicOptions, setTopicOptions] = useState<{ value: string; label?: string }[]>([]);
+  const [topicOptionsLoading, setTopicOptionsLoading] = useState(false);
+
+  const openTopicRunModal = async (jobId: number, taskType: Task["task_type"]) => {
+    setTopicRunState({ open: true, jobId, taskType });
+    setSelectedTopic("");
+    setTopicOptions([]);
+    setTopicOptionsLoading(true);
+    try {
+      const page = await fetchExecutions({ page: 1, page_size: 1, job_id: jobId });
+      const latest = page.items[0];
+      if (taskType === "image_card") {
+        const blocks = latest?.image_card_meta?.内容块列表 ?? [];
+        setTopicOptions(
+          blocks
+            .filter((block) => block?.序号)
+            .map((block) => ({
+              value: String(block.序号),
+              label: `第${block.序号}块：${block.摘要 ?? ""}`
+            }))
+        );
+      } else {
+        const topics = (latest?.topic_card_meta?.话题列表 ?? [])
+          .map((item) => item?.标题 ?? "")
+          .filter(Boolean);
+        setTopicOptions(topics.map((title) => ({ value: title })));
+      }
+    } catch {
+      // 拉取不到历史话题时不阻塞，仍可手动输入
+    } finally {
+      setTopicOptionsLoading(false);
+    }
+  };
+
+  const handleTopicRunSubmit = async () => {
+    const jobId = topicRunState.jobId;
+    if (!jobId) {
+      return;
+    }
+    const topic = selectedTopic.trim();
+    if (!topic) {
+      message.warning("请输入或选择一个话题");
+      return;
+    }
+    setTopicRunState({ open: false, jobId: null });
+    await handleRunJob(jobId, topic);
   };
 
   const updateTaskJobsOrder = useMemo(
@@ -575,6 +634,15 @@ function TasksPage() {
             >
               手动执行
             </Button>
+            {(task.task_type === "topic_card" || task.task_type === "image_card") && (
+              <Button
+                type="link"
+                onClick={() => openTopicRunModal(job.id, task.task_type)}
+                loading={runJobMutation.isPending && runningJobId === job.id}
+              >
+                单话题
+              </Button>
+            )}
             <Popconfirm
               title="确认删除该作业？"
               okText="删除"
@@ -712,6 +780,34 @@ function TasksPage() {
         onCancel={closeJobModal}
         onSubmit={handleJobSubmit}
       />
+      <Modal
+        title="指定话题执行"
+        open={topicRunState.open}
+        onOk={handleTopicRunSubmit}
+        onCancel={() => setTopicRunState({ open: false, jobId: null })}
+        okText="生成"
+        cancelText="取消"
+      >
+        <p style={{ marginBottom: 8 }}>
+          {topicRunState.taskType === "image_card"
+            ? "只生成所选内容块的图片并推送（模型仍会分析完整聊天记录；1:3 比例下选中一块会生成它所在的那张长图）。内容块列表来自该作业最近一次执行："
+            : "只生成所选话题的卡片并推送（模型仍会分析完整聊天记录）。话题列表来自该作业最近一次执行："}
+        </p>
+        <AutoComplete
+          style={{ width: "100%" }}
+          value={selectedTopic}
+          onChange={(value: string) => setSelectedTopic(value)}
+          options={topicOptionsLoading ? [] : topicOptions}
+          placeholder={
+            topicOptionsLoading
+              ? "正在加载历史记录…"
+              : topicRunState.taskType === "image_card"
+                ? "输入内容块序号（如 1）或关键词，可从下拉中选择"
+                : "输入话题标题或序号（如 1），可从下拉中选择"
+          }
+          allowClear
+        />
+      </Modal>
     </div>
   );
 }
