@@ -1,4 +1,4 @@
-from app.routers.models import _safe_image_test_extra
+from app.services.model_service import _safe_image_test_extra
 
 
 def test_image_connection_test_keeps_fixed_low_cost_fields():

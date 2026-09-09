@@ -1,8 +1,9 @@
 """Routes for webhook management."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from ..errors import NotFoundError
 from ..dependencies import get_db
 from ..schemas.webhook import WebhookCreate, WebhookImageTestPayload, WebhookUpdate
 from ..services import webhook_service
@@ -28,7 +29,7 @@ def update_webhook(webhook_id: int, payload: WebhookUpdate, db: Session = Depend
     try:
         webhook = webhook_service.update_webhook(db, webhook_id, payload)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     return success_response(webhook.model_dump(), message="Webhook 更新成功")
 
 
@@ -37,7 +38,7 @@ async def test_webhook_image(webhook_id: int, payload: WebhookImageTestPayload, 
     try:
         result = await webhook_service.test_webhook_image(db, webhook_id, payload)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     return success_response(result.model_dump(), message=result.message)
 
 
@@ -46,5 +47,5 @@ def delete_webhook(webhook_id: int, db: Session = Depends(get_db)):
     try:
         webhook_service.delete_webhook(db, webhook_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     return success_response(message="Webhook 已删除")

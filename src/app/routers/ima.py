@@ -3,10 +3,11 @@
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from loguru import logger
 from sqlalchemy.orm import Session
 
+from ..errors import AppError, NotFoundError
 from ..dependencies import get_db
 from ..scheduler.service import scheduler_service
 from ..schemas.ima import (
@@ -58,7 +59,7 @@ def create_ima_account(payload: ImaAccountCreate, db: Session = Depends(get_db))
     try:
         entity = ima_sync_service.create_account(db, payload)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 400, "message": str(exc)}) from exc
+        raise AppError(str(exc), code=400) from exc
     db.commit()
     view = ima_sync_service.get_account(db, entity.id)
     return success_response(view.model_dump() if view else None, message="ima 账号已创建")
@@ -69,8 +70,7 @@ def update_ima_account(account_id: int, payload: ImaAccountUpdate, db: Session =
     try:
         entity = ima_sync_service.update_account(db, account_id, payload)
     except ValueError as exc:
-        status_code_value = status.HTTP_404_NOT_FOUND if "不存在" in str(exc) else status.HTTP_400_BAD_REQUEST
-        raise HTTPException(status_code=status_code_value, detail={"code": status_code_value, "message": str(exc)}) from exc
+        raise (NotFoundError(str(exc)) if "不存在" in str(exc) else AppError(str(exc), code=400)) from exc
     db.commit()
     view = ima_sync_service.get_account(db, entity.id)
     return success_response(view.model_dump() if view else None, message="ima 账号已更新")
@@ -81,7 +81,7 @@ def delete_ima_account(account_id: int, db: Session = Depends(get_db)):
     try:
         ima_sync_service.delete_account(db, account_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 400, "message": str(exc)}) from exc
+        raise AppError(str(exc), code=400) from exc
     db.commit()
     return success_response(message="ima 账号已删除")
 
@@ -93,7 +93,7 @@ async def test_ima_account(account_id: int, db: Session = Depends(get_db)):
     except Exception as exc:
         logger.warning("IMA 账号测试失败 account_id={}: {}", account_id, exc)
         db.commit()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 400, "message": str(exc)}) from exc
+        raise AppError(str(exc), code=400) from exc
     db.commit()
     return success_response({"ok": True, "message": message}, message=message)
 
@@ -104,7 +104,7 @@ async def test_ima_settings(payload: Optional[ImaCredentialPreview] = None, db: 
         message = await ima_sync_service.test_connection(db, preview=payload)
     except Exception as exc:
         logger.warning("IMA 测试连接失败: {}", exc)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 400, "message": str(exc)}) from exc
+        raise AppError(str(exc), code=400) from exc
     return success_response({"ok": True, "message": message}, message=message)
 
 
@@ -114,7 +114,7 @@ async def get_note_folders(account_id: Optional[int] = Query(None), db: Session 
         options = await ima_sync_service.list_note_folder_options(db, account_id=account_id)
     except Exception as exc:
         logger.warning("IMA 拉取笔记本失败: {}", exc)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 400, "message": str(exc)}) from exc
+        raise AppError(str(exc), code=400) from exc
     return success_response([item.model_dump() for item in options])
 
 
@@ -124,7 +124,7 @@ async def preview_note_folders(payload: ImaCredentialPreview, db: Session = Depe
         options = await ima_sync_service.list_note_folder_options(db, preview=payload)
     except Exception as exc:
         logger.warning("IMA 预览拉取笔记本失败: {}", exc)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 400, "message": str(exc)}) from exc
+        raise AppError(str(exc), code=400) from exc
     return success_response([item.model_dump() for item in options])
 
 
@@ -134,7 +134,7 @@ async def get_knowledge_bases(account_id: Optional[int] = Query(None), db: Sessi
         options = await ima_sync_service.list_knowledge_base_options(db, account_id=account_id)
     except Exception as exc:
         logger.warning("IMA 拉取知识库列表失败: {}", exc)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 400, "message": str(exc)}) from exc
+        raise AppError(str(exc), code=400) from exc
     return success_response([item.model_dump() for item in options])
 
 
@@ -144,7 +144,7 @@ async def preview_knowledge_bases(payload: ImaCredentialPreview, db: Session = D
         options = await ima_sync_service.list_knowledge_base_options(db, preview=payload)
     except Exception as exc:
         logger.warning("IMA 预览拉取知识库列表失败: {}", exc)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 400, "message": str(exc)}) from exc
+        raise AppError(str(exc), code=400) from exc
     return success_response([item.model_dump() for item in options])
 
 
@@ -164,7 +164,7 @@ async def get_knowledge_folders(
         )
     except Exception as exc:
         logger.warning("IMA 拉取知识库文件夹失败 knowledge_base_id={}: {}", knowledge_base_id, exc)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 400, "message": str(exc)}) from exc
+        raise AppError(str(exc), code=400) from exc
     return success_response([item.model_dump() for item in options])
 
 
@@ -178,7 +178,7 @@ async def preview_knowledge_folders(payload: ImaKnowledgeFolderPreview, db: Sess
         )
     except Exception as exc:
         logger.warning("IMA 预览拉取知识库文件夹失败 knowledge_base_id={}: {}", payload.knowledge_base_id, exc)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 400, "message": str(exc)}) from exc
+        raise AppError(str(exc), code=400) from exc
     return success_response([item.model_dump() for item in options])
 
 
@@ -188,7 +188,7 @@ async def manual_sync(db: Session = Depends(get_db)):
         result = await ima_sync_service.run_manual_directory_sync(db)
     except Exception as exc:
         logger.warning("IMA 手动同步失败: {}", exc)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 400, "message": str(exc)}) from exc
+        raise AppError(str(exc), code=400) from exc
     db.commit()
     return success_response(result.model_dump(), message=result.message)
 
@@ -213,7 +213,7 @@ def update_sync_job(sync_job_id: int, payload: ImaSyncJobUpdate, db: Session = D
     try:
         entity = ima_sync_service.update_sync_job(db, sync_job_id, payload)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     db.commit()
     scheduler_service.trigger_reload()
     view = ima_sync_service.get_sync_job(db, entity.id, next_run_lookup=scheduler_service.get_ima_sync_job_next_run)
@@ -225,7 +225,7 @@ def delete_sync_job(sync_job_id: int, db: Session = Depends(get_db)):
     try:
         ima_sync_service.delete_sync_job(db, sync_job_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     db.commit()
     scheduler_service.trigger_reload()
     return success_response(message="ima 同步作业已删除")
@@ -236,10 +236,10 @@ async def run_sync_job(sync_job_id: int, db: Session = Depends(get_db)):
     try:
         result = await ima_sync_service.run_sync_job_once(db, sync_job_id, trigger_type="manual")
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     except Exception as exc:
         logger.warning("IMA 同步作业手动执行失败 sync_job_id={}: {}", sync_job_id, exc)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 400, "message": str(exc)}) from exc
+        raise AppError(str(exc), code=400) from exc
     db.commit()
     return success_response(result.model_dump(), message=result.message)
 

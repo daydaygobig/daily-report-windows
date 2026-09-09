@@ -263,17 +263,9 @@ def _app_message_content(
     member_names: Dict[str, str],
     forward_lookup: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
-    root = _parse_xml_fragment(raw)
-    if root is None:
-        return _app_message_content_soup(raw, member_names=member_names)
-    appmsg = root.find(".//appmsg")
-    if appmsg is None:
-        return None
-
-    app_type = _find_text(appmsg, "./type")
-    if app_type == "57":
-        return _refer_message_content(appmsg, member_names=member_names, forward_lookup=forward_lookup)
-    return _share_message_content(appmsg)
+    # 曾经是 ET 解析优先、soup 兜底的双轨实现；语料对比确认两版输出一致后合并为
+    # 单一 soup 路径（见 tests/test_weflow_parsing.py 的特征锁定）。
+    return _app_message_content_soup(raw, member_names=member_names)
 
 
 def _app_message_content_soup(
@@ -371,57 +363,6 @@ def _share_message_content_soup(appmsg: Any) -> str:
     return _placeholder("non_text")
 
 
-def _refer_message_content(
-    appmsg: ET.Element,
-    *,
-    member_names: Dict[str, str],
-    forward_lookup: Optional[Dict[str, str]] = None,
-) -> str:
-    reply = _find_text(appmsg, "./title")
-    refer = appmsg.find("./refermsg")
-    lines: List[str] = []
-    if refer is not None:
-        chatusr = _find_text(refer, "./chatusr")
-        display = _find_text(refer, "./displayname")
-        nickname = member_names.get(chatusr) if chatusr else None
-        nickname = nickname or display or chatusr or "unknown"
-        created = _format_refer_time(_find_text(refer, "./createtime"))
-        header = f"> {nickname}({chatusr or 'unknown'})"
-        if created:
-            header = f"{header} {created}"
-        lines.append(header)
-        quote = _summarize_refer_content(refer, forward_lookup=forward_lookup)
-        for quote_line in quote.splitlines() or [_placeholder("quote")]:
-            lines.append(f"> {quote_line}")
-    if reply:
-        lines.append(reply)
-    return "\n".join(lines).strip() or _placeholder("quote")
-
-
-def _summarize_refer_content(refer: ET.Element, *, forward_lookup: Optional[Dict[str, str]] = None) -> str:
-    refer_type = _find_text(refer, "./type")
-    content = _find_text(refer, "./content")
-    if refer_type in {"3", "34", "43", "47"}:
-        return _media_placeholder(refer_type)
-    if refer_type == "49":
-        full_forward = _forward_content_from_lookup(_find_text(refer, "./svrid"), forward_lookup)
-        if full_forward:
-            return full_forward
-        shared = _embedded_app_summary(content) if content else None
-        if shared:
-            return shared
-        text = _strip_xml(content).strip() if content else ""
-        return text or _placeholder("link_file")
-    if content:
-        shared = _app_message_content(content, member_names={}, forward_lookup=forward_lookup)
-        if shared:
-            return shared
-        text = _strip_xml(content).strip()
-        if text:
-            return text
-    return _placeholder("quote")
-
-
 def _share_message_content(appmsg: ET.Element) -> str:
     app_type = _find_text(appmsg, "./type")
     title = _find_text(appmsg, "./title")
@@ -454,6 +395,8 @@ def _share_message_content(appmsg: ET.Element) -> str:
 
 
 def _embedded_app_summary(raw: str) -> Optional[str]:
+    # 这里保留 ET 优先、soup 兜底的双轨：对比语料显示 soup（html5lib）会把 XML 里
+    # 的自闭合标签/内嵌 HTML 当文本处理，导致转发摘要退化；XML 解析器对这类内容更稳。
     root = _parse_xml_fragment(raw)
     if root is not None:
         appmsg = root.find(".//appmsg")

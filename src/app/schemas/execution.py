@@ -1,7 +1,10 @@
 """Pydantic schemas for execution records."""
 
+import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+from pydantic import field_validator
 
 from .base import ORMBase
 
@@ -18,6 +21,17 @@ class ExecutionOut(ORMBase):
     started_at: Optional[datetime]
     finished_at: Optional[datetime]
     duration_ms: Optional[int]
+
+    @field_validator("exported_files", mode="before", check_fields=False)
+    @classmethod
+    def _parse_exported_files_json(cls, value: Any) -> Any:
+        """ORM 里该列存 JSON 文本；schema 直接从 ORM 校验时先行解析（非字符串原样通过）。"""
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                return None
+        return value
     prompt_chars: Optional[int]
     prompt_tokens: Optional[int]
     completion_tokens: Optional[int]

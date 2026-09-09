@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from ..errors import AppError
 from ..dependencies import get_db
 from ..integrations.github import GithubAPIError
 from ..schemas.github_config import (
@@ -27,7 +28,7 @@ def create_config(payload: GithubConfigCreate, db: Session = Depends(get_db)):
     try:
         config = github_config_service.create_config(db, payload)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 1, "message": str(exc)}) from exc
+        raise AppError(str(exc)) from exc
     return success_response(config.model_dump(), message="配置已创建")
 
 
@@ -45,7 +46,7 @@ def delete_config(config_id: int, db: Session = Depends(get_db)):
     try:
         github_config_service.delete_config(db, config_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 1, "message": str(exc)}) from exc
+        raise AppError(str(exc)) from exc
     return success_response(message="配置已删除")
 
 
@@ -54,7 +55,7 @@ async def test_token(payload: GithubTokenTestRequest, db: Session = Depends(get_
     try:
         result = await github_config_service.test_token(db, payload)
     except GithubAPIError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 1, "message": str(exc)}) from exc
+        raise AppError(str(exc)) from exc
     except Exception as exc:  # pragma: no cover - defensive
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 1, "message": str(exc)}) from exc
+        raise AppError(str(exc)) from exc
     return success_response(result.model_dump(), message="Token 测试成功")

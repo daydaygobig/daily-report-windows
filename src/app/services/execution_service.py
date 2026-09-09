@@ -131,46 +131,40 @@ def _to_schema(execution) -> ExecutionOut:
     deployment_records = _github_deployment_records(db, execution)
     html_deployment_record = _html_deployment_record(deployment_records)
     github_deployments = [_github_deployment_item(record) for record in deployment_records]
-    raw_exported = execution.exported_files
-    exported_files = _safe_load_list(raw_exported) if raw_exported else None
+    exported_files = _safe_load_list(execution.exported_files) if execution.exported_files else None
     deploy_artifact = _deployment_artifact(html_deployment_record)
     deploy_url = deploy_artifact.get("url") if deploy_artifact else execution.deploy_url
     if deploy_artifact:
         exported_files = _merge_deploy_artifact(exported_files, deploy_artifact)
-    if exported_files is not None:
-        execution.exported_files = exported_files
     no_autoflush = db.no_autoflush if db is not None else nullcontext()
 
-    try:
-        with no_autoflush:
-            schema = ExecutionOut.model_validate(execution, from_attributes=True).model_copy(
-                update={
-                    "job_name": job_name,
-                    "task_name": task_name,
-                    "job_execution_time": job_execution_time,
-                    "job_created_at": job_created_at,
-                    "prompt_context": prompt_context,
-                    "is_manual": bool(getattr(execution, "is_manual", False)),
-                    "prompt_usage": prompt_usage,
-                    "github_config_name": execution.github_config.name if execution.github_config else None,
-                    "deploy_url": deploy_url,
-                    "deploy_record_id": html_deployment_record.id if html_deployment_record else None,
-                    "deploy_repo_path": deploy_artifact.get("repo_path") if deploy_artifact else None,
-                    "deploy_repo_full_name": deploy_artifact.get("repo") if deploy_artifact else None,
-                    "deploy_branch": deploy_artifact.get("branch") if deploy_artifact else None,
-                    "deploy_github_file_url": deploy_artifact.get("github_file_url") if deploy_artifact else None,
-                    "github_deployments": github_deployments or None,
-                    "ima_sync_status": getattr(execution, "ima_sync_status", None),
-                    "ima_sync_error": getattr(execution, "ima_sync_error", None),
-                    "ima_sync_batch_id": getattr(execution, "ima_sync_batch_id", None),
-                    "exported_files": exported_files,
-                    "disk_io": _latest_disk_io(execution),
-                    "topic_card_meta": _topic_card_meta(execution),
-                    "image_card_meta": _image_card_meta(execution),
-                }
-            )
-    finally:
-        execution.exported_files = raw_exported
+    with no_autoflush:
+        schema = ExecutionOut.model_validate(execution, from_attributes=True).model_copy(
+            update={
+                "job_name": job_name,
+                "task_name": task_name,
+                "job_execution_time": job_execution_time,
+                "job_created_at": job_created_at,
+                "prompt_context": prompt_context,
+                "is_manual": bool(getattr(execution, "is_manual", False)),
+                "prompt_usage": prompt_usage,
+                "github_config_name": execution.github_config.name if execution.github_config else None,
+                "deploy_url": deploy_url,
+                "deploy_record_id": html_deployment_record.id if html_deployment_record else None,
+                "deploy_repo_path": deploy_artifact.get("repo_path") if deploy_artifact else None,
+                "deploy_repo_full_name": deploy_artifact.get("repo") if deploy_artifact else None,
+                "deploy_branch": deploy_artifact.get("branch") if deploy_artifact else None,
+                "deploy_github_file_url": deploy_artifact.get("github_file_url") if deploy_artifact else None,
+                "github_deployments": github_deployments or None,
+                "ima_sync_status": getattr(execution, "ima_sync_status", None),
+                "ima_sync_error": getattr(execution, "ima_sync_error", None),
+                "ima_sync_batch_id": getattr(execution, "ima_sync_batch_id", None),
+                "exported_files": exported_files,
+                "disk_io": _latest_disk_io(execution),
+                "topic_card_meta": _topic_card_meta(execution),
+                "image_card_meta": _image_card_meta(execution),
+            }
+        )
     return schema
 
 

@@ -1,8 +1,9 @@
 """Routes for alert management."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from ..errors import NotFoundError
 from ..dependencies import get_db
 from ..services import alert_service
 from ..utils.responses import success_response
@@ -21,5 +22,5 @@ def acknowledge_alert(alert_id: int, db: Session = Depends(get_db)):
     try:
         alert = alert_service.acknowledge_alert(db, alert_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     return success_response(alert.model_dump(), message="已确认告警")

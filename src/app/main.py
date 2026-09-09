@@ -2,11 +2,13 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from loguru import logger
 
 from .config import get_settings
 from .db import Base, engine
 from .db_migrations import ensure_schema
+from .errors import AppError
 from .routers import api_router
 from .scheduler.service import scheduler_service
 
@@ -46,6 +48,14 @@ def create_app() -> FastAPI:
     ensure_schema(engine)
 
     app.include_router(api_router, prefix="/api")
+
+    @app.exception_handler(AppError)
+    async def app_error_handler(request, exc: AppError):
+        """领域异常 → 与历史 HTTPException(detail={code, message}) 完全相同的响应体。"""
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": {"code": exc.code, "message": str(exc)}},
+        )
 
     @app.get("/healthz")
     def healthcheck():

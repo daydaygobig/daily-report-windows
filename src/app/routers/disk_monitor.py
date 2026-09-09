@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from ..errors import AppError, NotFoundError
 from ..dependencies import get_db
 from ..schemas.disk_monitor import DiskInspectionJobCreate, DiskInspectionJobUpdate
 from ..services import disk_monitor_service
@@ -64,7 +65,7 @@ def list_io_records(
             sort_order=sort_order,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 1, "message": str(exc)}) from exc
+        raise AppError(str(exc)) from exc
     return success_response(data)
 
 
@@ -82,7 +83,7 @@ def get_aggregate(
     try:
         data = disk_monitor_service.get_aggregate(db, start_time=_parse_time(start_time), end_time=_parse_time(end_time))
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 1, "message": str(exc)}) from exc
+        raise AppError(str(exc)) from exc
     return success_response(data.model_dump())
 
 
@@ -110,7 +111,7 @@ def create_inspection_job(payload: DiskInspectionJobCreate, db: Session = Depend
     try:
         item = disk_monitor_service.create_inspection_job(db, payload)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 1, "message": str(exc)}) from exc
+        raise AppError(str(exc)) from exc
     db.commit()
     _trigger_scheduler_reload()
     return success_response(item.model_dump())
@@ -121,7 +122,7 @@ def update_inspection_job(job_id: int, payload: DiskInspectionJobUpdate, db: Ses
     try:
         item = disk_monitor_service.update_inspection_job(db, job_id, payload)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     db.commit()
     _trigger_scheduler_reload()
     return success_response(item.model_dump())
@@ -132,7 +133,7 @@ def delete_inspection_job(job_id: int, db: Session = Depends(get_db)):
     try:
         disk_monitor_service.delete_inspection_job(db, job_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     db.commit()
     _trigger_scheduler_reload()
     return success_response(None)
@@ -143,7 +144,7 @@ async def run_inspection_job(job_id: int, db: Session = Depends(get_db)):
     try:
         run = await disk_monitor_service.run_inspection_job(db, job_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     return success_response(run.model_dump())
 
 
@@ -170,7 +171,7 @@ def list_inspection_runs(
             end_time=_parse_time(end_time),
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 1, "message": str(exc)}) from exc
+        raise AppError(str(exc)) from exc
     return success_response(data)
 
 

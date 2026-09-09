@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
 from sqlalchemy.orm import Session
 
+from ..errors import AppError, NotFoundError
 from ..dependencies import get_db
 from ..schemas.job import JobCreate, JobReorderPayload, JobUpdate
 from ..schemas.task import TaskCreate, TaskUpdate
@@ -39,7 +40,7 @@ def get_task(task_id: int, db: Session = Depends(get_db)):
     try:
         task = task_service.get_task(db, task_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     return success_response(task.model_dump())
 
 
@@ -48,7 +49,7 @@ def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db)
     try:
         task = task_service.update_task(db, task_id, payload)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     db.commit()
     db.refresh(task)
     scheduler_service.trigger_reload()
@@ -62,7 +63,7 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
     try:
         task_service.delete_task(db, task_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     scheduler_service.trigger_reload()
     return success_response(message="任务已删除")
 
@@ -72,7 +73,7 @@ def create_job(task_id: int, payload: JobCreate, db: Session = Depends(get_db)):
     try:
         job = task_service.create_job(db, task_id, payload)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     db.commit()
     db.refresh(job)
     scheduler_service.trigger_reload()
@@ -84,7 +85,7 @@ def update_job(job_id: int, payload: JobUpdate, db: Session = Depends(get_db)):
     try:
         job = task_service.update_job(db, job_id, payload)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     logger.info(
         "Job {job_id} updated via API. execution_time={execution_time} start={start} end={end} schedule={schedule}",
         job_id=job.id,
@@ -104,7 +105,7 @@ def delete_job(job_id: int, db: Session = Depends(get_db)):
     try:
         task_service.delete_job(db, job_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": 404, "message": str(exc)}) from exc
+        raise NotFoundError(str(exc)) from exc
     scheduler_service.trigger_reload()
     return success_response(message="作业已删除")
 
@@ -114,7 +115,7 @@ def reorder_jobs(task_id: int, payload: JobReorderPayload, db: Session = Depends
     try:
         jobs = task_service.reorder_jobs(db, task_id, payload.job_ids)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": 400, "message": str(exc)}) from exc
+        raise AppError(str(exc), code=400) from exc
     db.commit()
     data = [job_to_dict(job) for job in jobs]
     return success_response(data, message="作业排序已更新")
