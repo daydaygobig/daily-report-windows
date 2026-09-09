@@ -30,14 +30,9 @@ import {
 import { fetchWebhooks } from "../services/webhooks";
 import { formatBeijingDateTime } from "../utils/datetime";
 import { BytesText } from "./DiskIoRecordsPage";
+import { getErrorMessage } from "../services/apiClient";
 
 const { Text } = Typography;
-
-const getErrorMessage = (error: unknown, fallback: string) =>
-  (error as any)?.response?.data?.detail?.message ||
-  (error as any)?.response?.data?.message ||
-  (error as any)?.message ||
-  fallback;
 
 type FormValues = Omit<DiskInspectionJobPayload, "threshold_bytes"> & {
   threshold_mb: number;

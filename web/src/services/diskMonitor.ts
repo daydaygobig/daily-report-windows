@@ -1,10 +1,5 @@
-import axios from "axios";
-
-type ApiResponse<T> = {
-  code: number;
-  message: string;
-  data: T;
-};
+import apiClient from "./apiClient";
+import type { ApiResponse } from "./apiClient";
 
 export type DiskIoRecord = {
   id: number;
@@ -170,55 +165,55 @@ export type DiskInspectionRunQuery = {
 };
 
 export async function fetchDiskIoRecords(params: DiskIoQuery): Promise<DiskIoRecordPage> {
-  const response = await axios.get<ApiResponse<DiskIoRecordPage>>("/api/disk-monitor/records", { params });
+  const response = await apiClient.get<ApiResponse<DiskIoRecordPage>>("/api/disk-monitor/records", { params });
   return response.data.data;
 }
 
 export async function fetchDiskIoSummaries(): Promise<DiskIoSummary[]> {
-  const response = await axios.get<ApiResponse<DiskIoSummary[]>>("/api/disk-monitor/records/summary");
+  const response = await apiClient.get<ApiResponse<DiskIoSummary[]>>("/api/disk-monitor/records/summary");
   return response.data.data;
 }
 
 export async function fetchDiskIoAggregate(params: { start_time: string; end_time: string }): Promise<DiskIoAggregate> {
-  const response = await axios.get<ApiResponse<DiskIoAggregate>>("/api/disk-monitor/records/aggregate", { params });
+  const response = await apiClient.get<ApiResponse<DiskIoAggregate>>("/api/disk-monitor/records/aggregate", { params });
   return response.data.data;
 }
 
 export async function fetchDiskIoRecord(recordId: number): Promise<DiskIoRecord> {
-  const response = await axios.get<ApiResponse<DiskIoRecord>>(`/api/disk-monitor/records/${recordId}`);
+  const response = await apiClient.get<ApiResponse<DiskIoRecord>>(`/api/disk-monitor/records/${recordId}`);
   return response.data.data;
 }
 
 export async function fetchDiskInspectionJobs(): Promise<DiskInspectionJob[]> {
-  const response = await axios.get<ApiResponse<DiskInspectionJob[]>>("/api/disk-monitor/inspection-jobs");
+  const response = await apiClient.get<ApiResponse<DiskInspectionJob[]>>("/api/disk-monitor/inspection-jobs");
   return response.data.data;
 }
 
 export async function createDiskInspectionJob(payload: DiskInspectionJobPayload): Promise<DiskInspectionJob> {
-  const response = await axios.post<ApiResponse<DiskInspectionJob>>("/api/disk-monitor/inspection-jobs", payload);
+  const response = await apiClient.post<ApiResponse<DiskInspectionJob>>("/api/disk-monitor/inspection-jobs", payload);
   return response.data.data;
 }
 
 export async function updateDiskInspectionJob(jobId: number, payload: DiskInspectionJobPayload): Promise<DiskInspectionJob> {
-  const response = await axios.put<ApiResponse<DiskInspectionJob>>(`/api/disk-monitor/inspection-jobs/${jobId}`, payload);
+  const response = await apiClient.put<ApiResponse<DiskInspectionJob>>(`/api/disk-monitor/inspection-jobs/${jobId}`, payload);
   return response.data.data;
 }
 
 export async function deleteDiskInspectionJob(jobId: number): Promise<void> {
-  await axios.delete<ApiResponse<null>>(`/api/disk-monitor/inspection-jobs/${jobId}`);
+  await apiClient.delete<ApiResponse<null>>(`/api/disk-monitor/inspection-jobs/${jobId}`);
 }
 
 export async function runDiskInspectionJob(jobId: number): Promise<DiskInspectionRun> {
-  const response = await axios.post<ApiResponse<DiskInspectionRun>>(`/api/disk-monitor/inspection-jobs/${jobId}/run`);
+  const response = await apiClient.post<ApiResponse<DiskInspectionRun>>(`/api/disk-monitor/inspection-jobs/${jobId}/run`);
   return response.data.data;
 }
 
 export async function fetchDiskInspectionRuns(params: DiskInspectionRunQuery): Promise<DiskInspectionRunPage> {
-  const response = await axios.get<ApiResponse<DiskInspectionRunPage>>("/api/disk-monitor/inspection-runs", { params });
+  const response = await apiClient.get<ApiResponse<DiskInspectionRunPage>>("/api/disk-monitor/inspection-runs", { params });
   return response.data.data;
 }
 
 export async function fetchDiskInspectionRun(runId: number): Promise<DiskInspectionRun> {
-  const response = await axios.get<ApiResponse<DiskInspectionRun>>(`/api/disk-monitor/inspection-runs/${runId}`);
+  const response = await apiClient.get<ApiResponse<DiskInspectionRun>>(`/api/disk-monitor/inspection-runs/${runId}`);
   return response.data.data;
 }

@@ -1,10 +1,5 @@
-import axios from "axios";
-
-type ApiResponse<T> = {
-  code: number;
-  message: string;
-  data: T;
-};
+import apiClient from "./apiClient";
+import type { ApiResponse } from "./apiClient";
 
 export type Webhook = {
   id: number;
@@ -39,29 +34,29 @@ export type WebhookCreatePayload = {
 export type WebhookUpdatePayload = Partial<WebhookCreatePayload>;
 
 export async function fetchWebhooks(): Promise<Webhook[]> {
-  const response = await axios.get<ApiResponse<Webhook[]>>("/api/webhooks/");
+  const response = await apiClient.get<ApiResponse<Webhook[]>>("/api/webhooks/");
   return response.data.data;
 }
 
 export async function createWebhook(payload: WebhookCreatePayload): Promise<Webhook> {
-  const response = await axios.post<ApiResponse<Webhook>>("/api/webhooks/", payload);
+  const response = await apiClient.post<ApiResponse<Webhook>>("/api/webhooks/", payload);
   return response.data.data;
 }
 
 export async function updateWebhook(webhookId: number, payload: WebhookUpdatePayload): Promise<Webhook> {
-  const response = await axios.put<ApiResponse<Webhook>>(`/api/webhooks/${webhookId}`, payload);
+  const response = await apiClient.put<ApiResponse<Webhook>>(`/api/webhooks/${webhookId}`, payload);
   return response.data.data;
 }
 
 export async function deleteWebhook(webhookId: number): Promise<void> {
-  await axios.delete<ApiResponse<null>>(`/api/webhooks/${webhookId}`);
+  await apiClient.delete<ApiResponse<null>>(`/api/webhooks/${webhookId}`);
 }
 
 export async function testWebhookImage(
   webhookId: number,
   payload: { app_id?: string | null; app_secret?: string | null; send_image?: boolean }
 ): Promise<{ ok: boolean; message: string; image_key?: string | null }> {
-  const response = await axios.post<ApiResponse<{ ok: boolean; message: string; image_key?: string | null }>>(
+  const response = await apiClient.post<ApiResponse<{ ok: boolean; message: string; image_key?: string | null }>>(
     `/api/webhooks/${webhookId}/test-image`,
     payload
   );

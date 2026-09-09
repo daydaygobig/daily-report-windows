@@ -1,10 +1,5 @@
-import axios from "axios";
-
-type ApiResponse<T> = {
-  code: number;
-  message: string;
-  data: T;
-};
+import apiClient from "./apiClient";
+import type { ApiResponse } from "./apiClient";
 
 export type Job = {
   id: number;
@@ -244,45 +239,45 @@ export type JobPayload = {
 export type JobUpdatePayload = Partial<JobPayload>;
 
 export async function fetchTasks(): Promise<Task[]> {
-  const response = await axios.get<ApiResponse<Task[]>>("/api/tasks/");
+  const response = await apiClient.get<ApiResponse<Task[]>>("/api/tasks/");
   return response.data.data;
 }
 
 export async function createTask(payload: TaskPayload): Promise<Task> {
-  const response = await axios.post<ApiResponse<Task>>("/api/tasks/", payload);
+  const response = await apiClient.post<ApiResponse<Task>>("/api/tasks/", payload);
   return response.data.data;
 }
 
 export async function updateTask(taskId: number, payload: TaskUpdatePayload): Promise<Task> {
-  const response = await axios.put<ApiResponse<Task>>(`/api/tasks/${taskId}`, payload);
+  const response = await apiClient.put<ApiResponse<Task>>(`/api/tasks/${taskId}`, payload);
   return response.data.data;
 }
 
 export async function deleteTask(taskId: number): Promise<void> {
-  await axios.delete<ApiResponse<null>>(`/api/tasks/${taskId}`);
+  await apiClient.delete<ApiResponse<null>>(`/api/tasks/${taskId}`);
 }
 
 export async function createJob(taskId: number, payload: JobPayload): Promise<Job> {
-  const response = await axios.post<ApiResponse<Job>>(`/api/tasks/${taskId}/jobs`, payload);
+  const response = await apiClient.post<ApiResponse<Job>>(`/api/tasks/${taskId}/jobs`, payload);
   return response.data.data;
 }
 
 export async function updateJob(jobId: number, payload: JobUpdatePayload): Promise<Job> {
-  const response = await axios.put<ApiResponse<Job>>(`/api/tasks/jobs/${jobId}`, payload);
+  const response = await apiClient.put<ApiResponse<Job>>(`/api/tasks/jobs/${jobId}`, payload);
   return response.data.data;
 }
 
 export async function deleteJob(jobId: number): Promise<void> {
-  await axios.delete<ApiResponse<null>>(`/api/tasks/jobs/${jobId}`);
+  await apiClient.delete<ApiResponse<null>>(`/api/tasks/jobs/${jobId}`);
 }
 
 export async function runJob(jobId: number, selectedTopic?: string): Promise<void> {
-  await axios.post<ApiResponse<unknown>>(`/api/tasks/jobs/${jobId}/run`, {
+  await apiClient.post<ApiResponse<unknown>>(`/api/tasks/jobs/${jobId}/run`, {
     selected_topic: selectedTopic || undefined
   });
 }
 
 export async function reorderJobs(taskId: number, jobIds: number[]): Promise<Job[]> {
-  const response = await axios.post<ApiResponse<Job[]>>(`/api/tasks/${taskId}/jobs/reorder`, { job_ids: jobIds });
+  const response = await apiClient.post<ApiResponse<Job[]>>(`/api/tasks/${taskId}/jobs/reorder`, { job_ids: jobIds });
   return response.data.data;
 }

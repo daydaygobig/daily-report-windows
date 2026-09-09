@@ -1,10 +1,5 @@
-import axios from "axios";
-
-type ApiResponse<T> = {
-  code: number;
-  message: string;
-  data: T;
-};
+import apiClient from "./apiClient";
+import type { ApiResponse } from "./apiClient";
 
 export type Model = {
   id: number;
@@ -66,30 +61,30 @@ export type RemoteModelsPayload = {
 };
 
 export async function fetchModels(): Promise<Model[]> {
-  const response = await axios.get<ApiResponse<Model[]>>("/api/models/");
+  const response = await apiClient.get<ApiResponse<Model[]>>("/api/models/");
   return response.data.data;
 }
 
 export async function createModel(payload: ModelCreatePayload): Promise<Model> {
-  const response = await axios.post<ApiResponse<Model>>("/api/models/", payload);
+  const response = await apiClient.post<ApiResponse<Model>>("/api/models/", payload);
   return response.data.data;
 }
 
 export async function updateModel(modelId: number, payload: ModelUpdatePayload): Promise<Model> {
-  const response = await axios.put<ApiResponse<Model>>(`/api/models/${modelId}`, payload);
+  const response = await apiClient.put<ApiResponse<Model>>(`/api/models/${modelId}`, payload);
   return response.data.data;
 }
 
 export async function deleteModel(modelId: number): Promise<void> {
-  await axios.delete<ApiResponse<null>>(`/api/models/${modelId}`);
+  await apiClient.delete<ApiResponse<null>>(`/api/models/${modelId}`);
 }
 
 export async function fetchRemoteModels(payload: RemoteModelsPayload): Promise<string[]> {
-  const response = await axios.post<ApiResponse<{ models: string[] }>>("/api/models/fetch-remote-models", payload);
+  const response = await apiClient.post<ApiResponse<{ models: string[] }>>("/api/models/fetch-remote-models", payload);
   return response.data.data.models ?? [];
 }
 
 export async function testModelConnection(payload: ModelTestPayload): Promise<ModelTestResult> {
-  const response = await axios.post<ApiResponse<ModelTestResult>>(`/api/models/test-connection`, payload);
+  const response = await apiClient.post<ApiResponse<ModelTestResult>>(`/api/models/test-connection`, payload);
   return response.data.data;
 }

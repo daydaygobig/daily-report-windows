@@ -1,4 +1,4 @@
-import axios from "axios";
+import apiClient from "./apiClient";
 
 type SystemStatus = {
   app_name: string;
@@ -14,12 +14,12 @@ type SystemStatus = {
 };
 
 export async function fetchSystemStatus(): Promise<SystemStatus> {
-  const response = await axios.get("/api/system/status");
+  const response = await apiClient.get("/api/system/status");
   return response.data.data as SystemStatus;
 }
 
 export async function downloadSystemLog(name: string): Promise<Blob> {
-  const response = await axios.get(`/api/system/logs`, {
+  const response = await apiClient.get(`/api/system/logs`, {
     params: { name },
     responseType: "blob"
   });

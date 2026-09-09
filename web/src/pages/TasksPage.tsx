@@ -10,7 +10,6 @@ import {
 } from "@hello-pangea/dnd";
 import type { ColumnsType } from "antd/es/table";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import axios from "axios";
 import TaskFormModal from "../components/TaskFormModal";
 import JobFormModal from "../components/JobFormModal";
 import type { Job, JobPayload, Task, TaskPayload } from "../services/tasks";
@@ -28,6 +27,7 @@ import {
 import { fetchChatrooms } from "../services/chatRecords";
 import { fetchExecutions } from "../services/executions";
 import { formatBeijingDateTime } from "../utils/datetime";
+import { getErrorMessage } from "../services/apiClient";
 
 const DragHandleContext = React.createContext<DraggableProvidedDragHandleProps | null>(null);
 
@@ -49,17 +49,6 @@ const weekdayLabelMap: Record<number, string> = {
   4: "周五",
   5: "周六",
   6: "周日"
-};
-
-const getErrorMessage = (error: unknown): string => {
-  if (axios.isAxiosError(error)) {
-    const detail = (error.response?.data as { detail?: { message?: string } })?.detail;
-    if (detail && typeof detail === "object" && "message" in detail) {
-      return (detail as { message?: string }).message ?? "请求失败";
-    }
-    return error.message;
-  }
-  return (error as Error)?.message ?? "请求失败";
 };
 
 const formatWeekdays = (weekdays?: number[] | null) =>

@@ -1,10 +1,5 @@
-import axios from "axios";
-
-type ApiResponse<T> = {
-  code: number;
-  message: string;
-  data: T;
-};
+import apiClient from "./apiClient";
+import type { ApiResponse } from "./apiClient";
 
 export type ImaTargetType = "note" | "knowledge_base";
 export type ImaSyncStatus = "success" | "failed" | "skipped" | "partial" | "none";
@@ -244,70 +239,70 @@ export type ImaManualSyncResult = {
 };
 
 export async function fetchImaSettings(): Promise<ImaSyncSettings> {
-  const response = await axios.get<ApiResponse<ImaSyncSettings>>("/api/ima/settings");
+  const response = await apiClient.get<ApiResponse<ImaSyncSettings>>("/api/ima/settings");
   return response.data.data;
 }
 
 export async function updateImaSettings(payload: ImaSyncSettingsPayload): Promise<ImaSyncSettings> {
-  const response = await axios.put<ApiResponse<ImaSyncSettings>>("/api/ima/settings", payload);
+  const response = await apiClient.put<ApiResponse<ImaSyncSettings>>("/api/ima/settings", payload);
   return response.data.data;
 }
 
 export async function fetchImaAccounts(): Promise<ImaAccount[]> {
-  const response = await axios.get<ApiResponse<ImaAccount[]>>("/api/ima/accounts");
+  const response = await apiClient.get<ApiResponse<ImaAccount[]>>("/api/ima/accounts");
   return response.data.data;
 }
 
 export async function createImaAccount(payload: ImaAccountPayload): Promise<ImaAccount> {
-  const response = await axios.post<ApiResponse<ImaAccount>>("/api/ima/accounts", payload);
+  const response = await apiClient.post<ApiResponse<ImaAccount>>("/api/ima/accounts", payload);
   return response.data.data;
 }
 
 export async function updateImaAccount(accountId: number, payload: ImaAccountPayload): Promise<ImaAccount> {
-  const response = await axios.put<ApiResponse<ImaAccount>>(`/api/ima/accounts/${accountId}`, payload);
+  const response = await apiClient.put<ApiResponse<ImaAccount>>(`/api/ima/accounts/${accountId}`, payload);
   return response.data.data;
 }
 
 export async function deleteImaAccount(accountId: number): Promise<void> {
-  await axios.delete<ApiResponse<null>>(`/api/ima/accounts/${accountId}`);
+  await apiClient.delete<ApiResponse<null>>(`/api/ima/accounts/${accountId}`);
 }
 
 export async function testImaAccount(accountId: number): Promise<{ ok: boolean; message: string }> {
-  const response = await axios.post<ApiResponse<{ ok: boolean; message: string }>>(`/api/ima/accounts/${accountId}/test`);
+  const response = await apiClient.post<ApiResponse<{ ok: boolean; message: string }>>(`/api/ima/accounts/${accountId}/test`);
   return response.data.data;
 }
 
 export async function testImaSettings(): Promise<{ ok: boolean; message: string }> {
-  const response = await axios.post<ApiResponse<{ ok: boolean; message: string }>>("/api/ima/settings/test");
+  const response = await apiClient.post<ApiResponse<{ ok: boolean; message: string }>>("/api/ima/settings/test");
   return response.data.data;
 }
 
 export async function testImaSettingsPreview(payload: ImaCredentialPreview): Promise<{ ok: boolean; message: string }> {
-  const response = await axios.post<ApiResponse<{ ok: boolean; message: string }>>("/api/ima/settings/test", payload);
+  const response = await apiClient.post<ApiResponse<{ ok: boolean; message: string }>>("/api/ima/settings/test", payload);
   return response.data.data;
 }
 
 export async function fetchImaNoteFolders(accountId?: number): Promise<ImaOption[]> {
-  const response = await axios.get<ApiResponse<ImaOption[]>>("/api/ima/options/note-folders", {
+  const response = await apiClient.get<ApiResponse<ImaOption[]>>("/api/ima/options/note-folders", {
     params: accountId ? { account_id: accountId } : undefined
   });
   return response.data.data;
 }
 
 export async function fetchImaNoteFoldersPreview(payload: ImaCredentialPreview): Promise<ImaOption[]> {
-  const response = await axios.post<ApiResponse<ImaOption[]>>("/api/ima/options/note-folders/preview", payload);
+  const response = await apiClient.post<ApiResponse<ImaOption[]>>("/api/ima/options/note-folders/preview", payload);
   return response.data.data;
 }
 
 export async function fetchImaKnowledgeBases(accountId?: number): Promise<ImaOption[]> {
-  const response = await axios.get<ApiResponse<ImaOption[]>>("/api/ima/options/knowledge-bases", {
+  const response = await apiClient.get<ApiResponse<ImaOption[]>>("/api/ima/options/knowledge-bases", {
     params: accountId ? { account_id: accountId } : undefined
   });
   return response.data.data;
 }
 
 export async function fetchImaKnowledgeBasesPreview(payload: ImaCredentialPreview): Promise<ImaOption[]> {
-  const response = await axios.post<ApiResponse<ImaOption[]>>("/api/ima/options/knowledge-bases/preview", payload);
+  const response = await apiClient.post<ApiResponse<ImaOption[]>>("/api/ima/options/knowledge-bases/preview", payload);
   return response.data.data;
 }
 
@@ -316,7 +311,7 @@ export async function fetchImaKnowledgeFolders(
   accountId?: number,
   forceRefresh?: boolean
 ): Promise<ImaOption[]> {
-  const response = await axios.get<ApiResponse<ImaOption[]>>("/api/ima/options/knowledge-folders", {
+  const response = await apiClient.get<ApiResponse<ImaOption[]>>("/api/ima/options/knowledge-folders", {
     params: {
       knowledge_base_id: knowledgeBaseId,
       ...(accountId ? { account_id: accountId } : {}),
@@ -329,50 +324,50 @@ export async function fetchImaKnowledgeFolders(
 export async function fetchImaKnowledgeFoldersPreview(
   payload: ImaCredentialPreview & { knowledge_base_id: string }
 ): Promise<ImaOption[]> {
-  const response = await axios.post<ApiResponse<ImaOption[]>>("/api/ima/options/knowledge-folders/preview", payload);
+  const response = await apiClient.post<ApiResponse<ImaOption[]>>("/api/ima/options/knowledge-folders/preview", payload);
   return response.data.data;
 }
 
 export async function runImaManualSync(): Promise<ImaManualSyncResult> {
-  const response = await axios.post<ApiResponse<ImaManualSyncResult>>("/api/ima/manual-sync");
+  const response = await apiClient.post<ApiResponse<ImaManualSyncResult>>("/api/ima/manual-sync");
   return response.data.data;
 }
 
 export async function fetchImaSyncJobs(): Promise<ImaSyncJob[]> {
-  const response = await axios.get<ApiResponse<ImaSyncJob[]>>("/api/ima/sync-jobs");
+  const response = await apiClient.get<ApiResponse<ImaSyncJob[]>>("/api/ima/sync-jobs");
   return response.data.data;
 }
 
 export async function createImaSyncJob(payload: ImaSyncJobPayload): Promise<ImaSyncJob> {
-  const response = await axios.post<ApiResponse<ImaSyncJob>>("/api/ima/sync-jobs", payload);
+  const response = await apiClient.post<ApiResponse<ImaSyncJob>>("/api/ima/sync-jobs", payload);
   return response.data.data;
 }
 
 export async function updateImaSyncJob(syncJobId: number, payload: ImaSyncJobPayload): Promise<ImaSyncJob> {
-  const response = await axios.put<ApiResponse<ImaSyncJob>>(`/api/ima/sync-jobs/${syncJobId}`, payload);
+  const response = await apiClient.put<ApiResponse<ImaSyncJob>>(`/api/ima/sync-jobs/${syncJobId}`, payload);
   return response.data.data;
 }
 
 export async function deleteImaSyncJob(syncJobId: number): Promise<void> {
-  await axios.delete<ApiResponse<null>>(`/api/ima/sync-jobs/${syncJobId}`);
+  await apiClient.delete<ApiResponse<null>>(`/api/ima/sync-jobs/${syncJobId}`);
 }
 
 export async function runImaSyncJob(syncJobId: number): Promise<ImaManualSyncResult> {
-  const response = await axios.post<ApiResponse<ImaManualSyncResult>>(`/api/ima/sync-jobs/${syncJobId}/run`);
+  const response = await apiClient.post<ApiResponse<ImaManualSyncResult>>(`/api/ima/sync-jobs/${syncJobId}/run`);
   return response.data.data;
 }
 
 export async function fetchImaSyncRecords(params: ImaSyncRecordQuery): Promise<ImaSyncRecordPage> {
-  const response = await axios.get<ApiResponse<ImaSyncRecordPage>>("/api/ima/records", { params });
+  const response = await apiClient.get<ApiResponse<ImaSyncRecordPage>>("/api/ima/records", { params });
   return response.data.data;
 }
 
 export async function fetchImaSyncBatches(params: ImaSyncBatchQuery): Promise<ImaSyncBatchPage> {
-  const response = await axios.get<ApiResponse<ImaSyncBatchPage>>("/api/ima/records/batches", { params });
+  const response = await apiClient.get<ApiResponse<ImaSyncBatchPage>>("/api/ima/records/batches", { params });
   return response.data.data;
 }
 
 export async function fetchImaBatchItems(batchId: string): Promise<ImaSyncRecord[]> {
-  const response = await axios.get<ApiResponse<ImaSyncRecord[]>>(`/api/ima/records/batches/${batchId}/items`);
+  const response = await apiClient.get<ApiResponse<ImaSyncRecord[]>>(`/api/ima/records/batches/${batchId}/items`);
   return response.data.data;
 }

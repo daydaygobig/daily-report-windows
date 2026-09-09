@@ -2,12 +2,12 @@ import { useCallback, useMemo, useState } from "react";
 import { Button, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import axios from "axios";
 import ModelFormModal from "../components/ModelFormModal";
 import type { Model, ModelCreatePayload, ModelUpdatePayload } from "../services/models";
 import { createModel, deleteModel, fetchModels, updateModel } from "../services/models";
 import { useResizableColumns } from "../hooks/useResizableColumns";
 import { formatBeijingDateTime } from "../utils/datetime";
+import { getErrorMessage } from "../services/apiClient";
 
 const { Text } = Typography;
 const COLUMN_STORAGE_KEY = "models_table_column_widths";
@@ -23,17 +23,6 @@ const DEFAULT_COLUMN_WIDTHS: Record<string, number> = {
   extra: 320,
   updated_at: 180,
   actions: 160
-};
-
-const getErrorMessage = (error: unknown): string => {
-  if (axios.isAxiosError(error)) {
-    const detail = (error.response?.data as { detail?: { message?: string } })?.detail;
-    if (detail && typeof detail === "object" && "message" in detail) {
-      return (detail as { message?: string }).message ?? "请求失败";
-    }
-    return error.message;
-  }
-  return (error as Error)?.message ?? "请求失败";
 };
 
 function ModelsPage() {

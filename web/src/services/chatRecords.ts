@@ -1,10 +1,5 @@
-import axios from "axios";
-
-type ApiResponse<T> = {
-  code: number;
-  message: string;
-  data: T;
-};
+import apiClient from "./apiClient";
+import type { ApiResponse } from "./apiClient";
 
 export type ChatRecordProvider = "chatlog" | "weflow";
 
@@ -44,17 +39,17 @@ export type Chatroom = {
 };
 
 export async function fetchChatRecordSettings(): Promise<ChatRecordSettings> {
-  const response = await axios.get<ApiResponse<ChatRecordSettings>>("/api/chat-records/settings");
+  const response = await apiClient.get<ApiResponse<ChatRecordSettings>>("/api/chat-records/settings");
   return response.data.data;
 }
 
 export async function updateChatRecordSettings(payload: ChatRecordSettingsPayload): Promise<ChatRecordSettings> {
-  const response = await axios.put<ApiResponse<ChatRecordSettings>>("/api/chat-records/settings", payload);
+  const response = await apiClient.put<ApiResponse<ChatRecordSettings>>("/api/chat-records/settings", payload);
   return response.data.data;
 }
 
 export async function testChatRecordSettings(payload: ChatRecordSettingsPayload) {
-  const response = await axios.post<ApiResponse<{ ok: boolean; provider: ChatRecordProvider; status: string; message: string }>>(
+  const response = await apiClient.post<ApiResponse<{ ok: boolean; provider: ChatRecordProvider; status: string; message: string }>>(
     "/api/chat-records/settings/test",
     payload
   );
@@ -62,12 +57,12 @@ export async function testChatRecordSettings(payload: ChatRecordSettingsPayload)
 }
 
 export async function fetchChatRecordStatus(): Promise<ChatRecordStatus> {
-  const response = await axios.get<ApiResponse<ChatRecordStatus>>("/api/chat-records/status");
+  const response = await apiClient.get<ApiResponse<ChatRecordStatus>>("/api/chat-records/status");
   return response.data.data;
 }
 
 export async function fetchChatrooms(keyword?: string, talkers?: string[]): Promise<Chatroom[]> {
-  const response = await axios.get<ApiResponse<Chatroom[]>>("/api/chat-records/chatrooms", {
+  const response = await apiClient.get<ApiResponse<Chatroom[]>>("/api/chat-records/chatrooms", {
     params: {
       keyword: keyword?.trim() || undefined,
       talkers: talkers && talkers.length ? talkers.join(",") : undefined

@@ -1,10 +1,5 @@
-import axios from "axios";
-
-type ApiResponse<T> = {
-  code: number;
-  message: string;
-  data: T;
-};
+import apiClient from "./apiClient";
+import type { ApiResponse } from "./apiClient";
 
 export type PromptTemplate = {
   id: number;
@@ -61,20 +56,20 @@ export const normalizeImageSplitPrompt = (value?: string | null): string =>
   );
 
 export async function fetchPromptTemplates(): Promise<PromptTemplate[]> {
-  const response = await axios.get<ApiResponse<PromptTemplate[]>>("/api/prompt-templates/");
+  const response = await apiClient.get<ApiResponse<PromptTemplate[]>>("/api/prompt-templates/");
   return response.data.data;
 }
 
 export async function createPromptTemplate(payload: PromptTemplatePayload): Promise<PromptTemplate> {
-  const response = await axios.post<ApiResponse<PromptTemplate>>("/api/prompt-templates/", payload);
+  const response = await apiClient.post<ApiResponse<PromptTemplate>>("/api/prompt-templates/", payload);
   return response.data.data;
 }
 
 export async function updatePromptTemplate(id: number, payload: PromptTemplatePayload): Promise<PromptTemplate> {
-  const response = await axios.put<ApiResponse<PromptTemplate>>(`/api/prompt-templates/${id}`, payload);
+  const response = await apiClient.put<ApiResponse<PromptTemplate>>(`/api/prompt-templates/${id}`, payload);
   return response.data.data;
 }
 
 export async function deletePromptTemplate(id: number): Promise<void> {
-  await axios.delete<ApiResponse<null>>(`/api/prompt-templates/${id}`);
+  await apiClient.delete<ApiResponse<null>>(`/api/prompt-templates/${id}`);
 }

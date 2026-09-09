@@ -10,6 +10,7 @@ import { fetchExecutionDetail, fetchExecutions, type Execution, type ExecutionPa
 import { fetchTasks } from "../services/tasks";
 import { formatDateTime } from "../utils/datetime";
 import ExecutionDetailModal from "../components/ExecutionDetailModal";
+import { getErrorMessage } from "../services/apiClient";
 
 const { RangePicker } = DatePicker;
 const { Paragraph, Text } = Typography;
@@ -66,12 +67,7 @@ function ExecutionsPage() {
     if (!isError) {
       return;
     }
-    const apiMessage =
-      (error as any)?.response?.data?.detail?.message ||
-      (error as any)?.response?.data?.message ||
-      (error as any)?.message ||
-      "执行记录查询失败";
-    message.error(apiMessage);
+    message.error(getErrorMessage(error, "执行记录查询失败"));
   }, [isError, error]);
   useEffect(() => {
     const executionParam = searchParams.get("executionId");

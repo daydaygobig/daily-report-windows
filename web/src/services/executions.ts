@@ -1,4 +1,4 @@
-import axios from "axios";
+import apiClient from "./apiClient";
 
 export type PromptContext = {
   task_name?: string;
@@ -187,11 +187,11 @@ export type ExecutionPage = {
 };
 
 export async function fetchExecutions(params: ExecutionQuery): Promise<ExecutionPage> {
-  const response = await axios.get(`/api/executions/`, { params });
+  const response = await apiClient.get(`/api/executions/`, { params });
   return response.data.data as ExecutionPage;
 }
 
 export async function fetchExecutionDetail(executionId: number): Promise<Execution> {
-  const response = await axios.get(`/api/executions/${executionId}`);
+  const response = await apiClient.get(`/api/executions/${executionId}`);
   return response.data.data as Execution;
 }

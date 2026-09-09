@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, Card, Form, Input, InputNumber, Select, Space, Switch, Typography, message } from "antd";
 import { downloadSystemLog } from "../services/system";
+import { getErrorMessage } from "../services/apiClient";
 import {
   fetchChatRecordSettings,
   testChatRecordSettings,
@@ -13,11 +14,6 @@ import {
 type SettingsFormValues = ChatRecordSettingsPayload & {
   weflow_token?: string;
 };
-
-function getErrorMessage(error: unknown): string {
-  const maybe = error as { response?: { data?: { detail?: { message?: string } } }; message?: string };
-  return maybe.response?.data?.detail?.message || maybe.message || "请求失败";
-}
 
 function toFormValues(settings: ChatRecordSettings): SettingsFormValues {
   return {

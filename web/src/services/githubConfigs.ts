@@ -1,10 +1,5 @@
-import axios from "axios";
-
-type ApiResponse<T> = {
-  code: number;
-  message: string;
-  data: T;
-};
+import apiClient from "./apiClient";
+import type { ApiResponse } from "./apiClient";
 
 export type GithubConfig = {
   id: number;
@@ -60,26 +55,26 @@ export type GithubTokenTestResult = {
 };
 
 export async function fetchGithubConfigs(): Promise<GithubConfig[]> {
-  const response = await axios.get<ApiResponse<GithubConfig[]>>("/api/github-configs/");
+  const response = await apiClient.get<ApiResponse<GithubConfig[]>>("/api/github-configs/");
   return response.data.data;
 }
 
 export async function createGithubConfig(payload: GithubConfigPayload): Promise<GithubConfig> {
-  const response = await axios.post<ApiResponse<GithubConfig>>("/api/github-configs/", payload);
+  const response = await apiClient.post<ApiResponse<GithubConfig>>("/api/github-configs/", payload);
   return response.data.data;
 }
 
 export async function updateGithubConfig(id: number, payload: GithubConfigUpdatePayload): Promise<GithubConfig> {
-  const response = await axios.put<ApiResponse<GithubConfig>>(`/api/github-configs/${id}`, payload);
+  const response = await apiClient.put<ApiResponse<GithubConfig>>(`/api/github-configs/${id}`, payload);
   return response.data.data;
 }
 
 export async function deleteGithubConfig(id: number): Promise<void> {
-  await axios.delete<ApiResponse<null>>(`/api/github-configs/${id}`);
+  await apiClient.delete<ApiResponse<null>>(`/api/github-configs/${id}`);
 }
 
 export async function testGithubToken(token: string, owner?: string, per_page = 50): Promise<GithubTokenTestResult> {
-  const response = await axios.post<ApiResponse<GithubTokenTestResult>>("/api/github-configs/test", {
+  const response = await apiClient.post<ApiResponse<GithubTokenTestResult>>("/api/github-configs/test", {
     token,
     owner,
     per_page

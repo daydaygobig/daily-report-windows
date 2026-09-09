@@ -1,4 +1,4 @@
-import axios from "axios";
+import apiClient from "./apiClient";
 
 export type Alert = {
   id: number;
@@ -10,6 +10,6 @@ export type Alert = {
 };
 
 export async function fetchAlerts(): Promise<Alert[]> {
-  const response = await axios.get("/api/alerts/");
+  const response = await apiClient.get("/api/alerts/");
   return response.data.data as Alert[];
 }

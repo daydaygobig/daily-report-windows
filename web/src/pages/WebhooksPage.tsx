@@ -2,12 +2,12 @@ import { useMemo, useState } from "react";
 import { Button, Popconfirm, Space, Table, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import axios from "axios";
 import WebhookFormModal from "../components/WebhookFormModal";
 import type { Webhook, WebhookCreatePayload, WebhookUpdatePayload } from "../services/webhooks";
 import { createWebhook, deleteWebhook, fetchWebhooks, updateWebhook } from "../services/webhooks";
 import { useResizableColumns } from "../hooks/useResizableColumns";
 import { formatBeijingDateTime } from "../utils/datetime";
+import { getErrorMessage } from "../services/apiClient";
 
 const { Text } = Typography;
 
@@ -21,17 +21,6 @@ const IMAGE_ENGINE_LABELS: Record<Webhook["image_render_engine"], string> = {
   satori: "Satori",
   svg: "SVG",
   typst: "Typst"
-};
-
-const getErrorMessage = (error: unknown): string => {
-  if (axios.isAxiosError(error)) {
-    const detail = (error.response?.data as { detail?: { message?: string } })?.detail;
-    if (detail && typeof detail === "object" && "message" in detail) {
-      return (detail as { message?: string }).message ?? "请求失败";
-    }
-    return error.message;
-  }
-  return (error as Error)?.message ?? "请求失败";
 };
 
 function WebhooksPage() {

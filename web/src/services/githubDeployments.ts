@@ -1,10 +1,5 @@
-import axios from "axios";
-
-type ApiResponse<T> = {
-  code: number;
-  message: string;
-  data: T;
-};
+import apiClient from "./apiClient";
+import type { ApiResponse } from "./apiClient";
 
 export type GithubDeployment = {
   id: number;
@@ -49,6 +44,6 @@ export type GithubDeploymentPage = {
 };
 
 export async function fetchGithubDeployments(params: GithubDeploymentQuery): Promise<GithubDeploymentPage> {
-  const response = await axios.get<ApiResponse<GithubDeploymentPage>>("/api/github-deployments/", { params });
+  const response = await apiClient.get<ApiResponse<GithubDeploymentPage>>("/api/github-deployments/", { params });
   return response.data.data;
 }
