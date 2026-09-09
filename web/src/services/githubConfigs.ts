@@ -37,7 +37,8 @@ export type GithubConfigPayload = {
   view_url_template?: string | null;
   is_default?: boolean;
   description?: string | null;
-  token: string;
+  // 编辑模式下 token 可不下发（后端保留原值），故为可选
+  token?: string;
 };
 
 export type GithubConfigUpdatePayload = Partial<Omit<GithubConfigPayload, "token">> & {
