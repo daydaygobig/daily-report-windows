@@ -15,7 +15,7 @@ class ChatRecordSetting(BaseModel):
     chatlog_decrypt_timeout_sec = Column(Integer, nullable=False, default=300)
     chatlog_decrypt_cache_enabled = Column(Boolean, nullable=False, default=True)
     chatlog_decrypt_cache_buffer_sec = Column(Integer, nullable=False, default=0)
-    chatlog_work_dir = Column(Text, nullable=False, default=r"C:\Users\Limmer\Documents\chatlog")
+    chatlog_work_dir = Column(Text, nullable=False, default="")
     weflow_base_url = Column(Text, nullable=False, default="http://127.0.0.1:5031")
     weflow_token_cipher = Column(Text, nullable=True)
     weflow_page_limit = Column(Integer, nullable=False, default=1000)

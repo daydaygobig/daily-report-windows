@@ -1,7 +1,7 @@
 """Repository for LLM models."""
 
 import json
-from typing import Iterable, List, Optional
+from typing import Iterable, List
 
 from sqlalchemy.orm import Session
 

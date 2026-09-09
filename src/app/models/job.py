@@ -1,5 +1,7 @@
 """Job entity."""
 
+from typing import Optional
+
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
@@ -97,3 +99,7 @@ class Job(BaseModel):
     message_stats_github_config = relationship("GithubConfig", foreign_keys=[message_stats_github_config_id])
     ima_account = relationship("ImaAccount", foreign_keys=[ima_account_id])
     image_prompt_template = relationship("PromptTemplate", foreign_keys=[image_prompt_template_id])
+
+    @property
+    def ima_account_name(self) -> Optional[str]:
+        return self.ima_account.name if self.ima_account else None

@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     chatlog_decrypt_timeout_sec: int = 300
     chatlog_decrypt_cache_enabled: bool = True
     chatlog_decrypt_cache_buffer_sec: int = 0
-    chatlog_work_dir: str = r"C:\Users\你的用户名\Documents\chatlog"
+    chatlog_work_dir: str = ""  # chatlog 命令行工具目录；在 .env（TS_CHATLOG_WORK_DIR）或设置页配置
     weflow_base_url: str = "http://127.0.0.1:5031"
     weflow_access_token: Optional[str] = None
     weflow_page_limit: int = 1000

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 from loguru import logger
@@ -262,7 +264,7 @@ def ensure_schema(engine: Engine) -> None:
             chatlog_decrypt_timeout_sec INTEGER NOT NULL DEFAULT 300,
             chatlog_decrypt_cache_enabled INTEGER NOT NULL DEFAULT 1,
             chatlog_decrypt_cache_buffer_sec INTEGER NOT NULL DEFAULT 0,
-            chatlog_work_dir TEXT NOT NULL DEFAULT 'C:\\Users\\Limmer\\Documents\\chatlog',
+            chatlog_work_dir TEXT NOT NULL DEFAULT '',
             weflow_base_url TEXT NOT NULL DEFAULT 'http://127.0.0.1:5031',
             weflow_token_cipher TEXT,
             weflow_page_limit INTEGER NOT NULL DEFAULT 1000,
@@ -378,7 +380,7 @@ def ensure_schema(engine: Engine) -> None:
     _ensure_index(engine, "idx_disk_io_execution_id", "CREATE INDEX idx_disk_io_execution_id ON disk_io_records(execution_id)")
     _ensure_index(engine, "idx_disk_io_finished_at", "CREATE INDEX idx_disk_io_finished_at ON disk_io_records(finished_at)")
     _ensure_index(engine, "idx_disk_inspection_runs_inspected_at", "CREATE INDEX idx_disk_inspection_runs_inspected_at ON disk_inspection_runs(inspected_at)")
-    _ensure_column(engine, "chat_record_settings", "chatlog_work_dir", "TEXT NOT NULL DEFAULT 'C:\\Users\\Limmer\\Documents\\chatlog'")
+    _ensure_column(engine, "chat_record_settings", "chatlog_work_dir", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(engine, "disk_io_records", "chatlog_decrypt_write_bytes", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(engine, "disk_io_records", "chatlog_decrypt_status", "VARCHAR(20)")
     _ensure_column(engine, "disk_io_records", "chatlog_work_dir", "TEXT")
@@ -419,6 +421,57 @@ def ensure_schema(engine: Engine) -> None:
     _ensure_index(engine, "idx_ima_sync_records_batch_id", "CREATE INDEX idx_ima_sync_records_batch_id ON ima_sync_records (batch_id)")
     _ensure_index(engine, "idx_ima_sync_records_account_id", "CREATE INDEX idx_ima_sync_records_account_id ON ima_sync_records (ima_account_id)")
     _ensure_index(engine, "idx_ima_sync_records_sync_job_id", "CREATE INDEX idx_ima_sync_records_sync_job_id ON ima_sync_records (sync_job_id)")
+
+    sync_alembic_version(engine)
+
+
+def sync_alembic_version(engine: Engine) -> None:
+    """把数据库接入 Alembic 版本管理。
+
+    - 从未版本化的存量库（无 alembic_version 表）：schema 已由 create_all + 上述补丁建好，
+      直接 stamp 到 baseline，不重复建表；
+    - 已版本化的库：升级到最新 revision（后续 schema 变更走 migrations/versions/）。
+    失败只记日志不阻断启动——迁移问题不应让服务起不来。
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    inspector = inspect(engine)
+    versioned = inspector.has_table("alembic_version")
+    if versioned:
+        current = engine.connect().execute(text("SELECT version_num FROM alembic_version")).scalar()
+        head = _alembic_revision_heads()
+        if current == head:
+            return
+    try:
+        cfg = Config(str(_repo_root() / "alembic.ini"))
+        # 显式指定目标库=当前 engine（而非 env.py 按应用配置解析），保证测试内传入临时库时不会误碰真实库
+        cfg.set_main_option("sqlalchemy.url", str(engine.url))
+        if versioned:
+            command.upgrade(cfg, "head")
+            logger.info("Alembic 迁移已升级到最新版本")
+        else:
+            command.stamp(cfg, "head")
+            logger.info("已有数据库已标记 Alembic baseline（stamp head）")
+    except Exception:
+        logger.exception("Alembic 版本同步失败（服务继续启动）")
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _alembic_revision_heads() -> "str | None":
+    try:
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        cfg = Config(str(_repo_root() / "alembic.ini"))
+        script = ScriptDirectory.from_config(cfg)
+        heads = script.get_heads()
+        return heads[0] if len(heads) == 1 else None
+    except Exception:
+        return None
 
 
 def _ensure_column(engine: Engine, table: str, column: str, ddl: str) -> bool:

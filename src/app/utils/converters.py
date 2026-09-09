@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from ..models.job import Job
 from ..models.task import Task
+from ..schemas.job import JobOut
 
 
 def serialize_weekdays(weekdays: Optional[List[int]]) -> Optional[str]:
@@ -57,111 +58,27 @@ def task_to_dict(task: Task) -> Dict[str, Any]:
 
 
 def job_to_dict(job: Job) -> Dict[str, Any]:
-    task_store_chatlog = bool(getattr(job, "task", None) and getattr(job.task, "store_chatlog", False))
+    """以 JobOut schema 为唯一字段清单序列化 Job，仅追加 API 展示扩展字段。
+
+    字段事实来源收敛为 models/job.py（表结构）与 schemas/job.py（API 契约）两处，
+    本函数不再维护第三份字段清单。
+    """
+    data = JobOut.model_validate(job).model_dump()
+    data["github_config"] = (
+        {"id": job.github_config.id, "name": job.github_config.name} if job.github_config else None
+    )
+    stats_config = getattr(job, "message_stats_github_config", None)
+    data["message_stats_github_config"] = (
+        {"id": stats_config.id, "name": stats_config.name} if stats_config else None
+    )
+    # chatlog 备份三态回落：job 未显式配置（NULL）时沿用 task.store_chatlog
     raw_chatlog_enabled = getattr(job, "chatlog_backup_enabled", None)
+    task_store_chatlog = bool(getattr(job, "task", None) and getattr(job.task, "store_chatlog", False))
     chatlog_backup_enabled = raw_chatlog_enabled if raw_chatlog_enabled is not None else task_store_chatlog
-    chatlog_backup_formats = _load_json(getattr(job, "chatlog_backup_formats", None), default=None)
-    if chatlog_backup_formats is None and chatlog_backup_enabled:
-        chatlog_backup_formats = ["txt"]
-    return {
-        "id": job.id,
-        "task_id": job.task_id,
-        "name": job.name,
-        "start_time": job.start_time,
-        "end_time": job.end_time,
-        "date_baseline": job.date_baseline,
-        "schedule_type": job.schedule_type,
-        "cron_expression": job.cron_expression,
-        "weekdays": _load_json(job.weekdays, default=None),
-        "execution_time": job.execution_time,
-        "offset_minutes": job.offset_minutes,
-        "interval_enabled": bool(getattr(job, "interval_enabled", False)),
-        "interval_minutes": job.interval_minutes,
-        "window_start": job.window_start,
-        "window_end": job.window_end,
-        "disk_alert_enabled": bool(getattr(job, "disk_alert_enabled", False)),
-        "disk_alert_threshold_bytes": getattr(job, "disk_alert_threshold_bytes", 100 * 1024 * 1024),
-        "max_retry": job.max_retry,
-        "retry_interval_sec": job.retry_interval_sec,
-        "is_enabled": job.is_enabled,
-        "description": job.description,
-        "last_run_at": job.last_run_at,
-        "next_run_at": job.next_run_at,
-        "created_at": job.created_at,
-        "updated_at": job.updated_at,
-        "github_deploy_enabled": bool(getattr(job, "github_deploy_enabled", False)),
-        "github_config_id": job.github_config_id,
-        "github_config": {
-            "id": job.github_config.id,
-            "name": job.github_config.name,
-        }
-        if job.github_config
-        else None,
-        "html_backup_enabled": bool(getattr(job, "html_backup_enabled", False)),
-        "html_backup_path": getattr(job, "html_backup_path", None),
-        "html_backup_filename_template": getattr(job, "html_backup_filename_template", None),
-        "html_backup_filename_date_offset_days": getattr(job, "html_backup_filename_date_offset_days", 0),
-        "github_filename_template": getattr(job, "github_filename_template", None),
-        "days_offset": getattr(job, "days_offset", 0),
-        "display_order": getattr(job, "display_order", 0),
-        "message_stats_enabled": bool(getattr(job, "message_stats_enabled", False)),
-        "message_stats_formats": _load_json(getattr(job, "message_stats_formats", None), default=None),
-        "message_stats_path": getattr(job, "message_stats_path", None),
-        "message_stats_filename_template": getattr(job, "message_stats_filename_template", None),
-        "message_stats_filename_date_offset_days": getattr(job, "message_stats_filename_date_offset_days", 0),
-        "message_stats_github_enabled": bool(getattr(job, "message_stats_github_enabled", False)),
-        "message_stats_github_config_id": getattr(job, "message_stats_github_config_id", None),
-        "message_stats_github_config": {
-            "id": job.message_stats_github_config.id,
-            "name": job.message_stats_github_config.name,
-        }
-        if getattr(job, "message_stats_github_config", None)
-        else None,
-        "message_stats_github_filename_template": getattr(job, "message_stats_github_filename_template", None),
-        "message_stats_github_filename_date_offset_days": getattr(job, "message_stats_github_filename_date_offset_days", 0),
-        "message_stats_github_root": getattr(job, "message_stats_github_root", None),
-        "chatlog_backup_enabled": chatlog_backup_enabled,
-        "chatlog_backup_formats": chatlog_backup_formats,
-        "chatlog_backup_path": getattr(job, "chatlog_backup_path", None),
-        "chatlog_backup_filename_template": getattr(job, "chatlog_backup_filename_template", None),
-        "chatlog_backup_filename_date_offset_days": getattr(job, "chatlog_backup_filename_date_offset_days", 0),
-        "model_output_backup_enabled": bool(getattr(job, "model_output_backup_enabled", False)),
-        "model_output_path": getattr(job, "model_output_path", None),
-        "model_output_formats": _load_json(getattr(job, "model_output_formats", None), default=None),
-        "model_output_filename_template": getattr(job, "model_output_filename_template", None),
-        "model_output_filename_date_offset_days": getattr(job, "model_output_filename_date_offset_days", 0),
-        "ima_sync_enabled": bool(getattr(job, "ima_sync_enabled", False)),
-        "ima_use_default_account": bool(getattr(job, "ima_use_default_account", True)),
-        "ima_account_id": getattr(job, "ima_account_id", None),
-        "ima_account_name": getattr(getattr(job, "ima_account", None), "name", None),
-        "ima_use_default_target": bool(getattr(job, "ima_use_default_target", True)),
-        "ima_target_type": getattr(job, "ima_target_type", None),
-        "ima_note_folder_id": getattr(job, "ima_note_folder_id", None),
-        "ima_note_folder_name": getattr(job, "ima_note_folder_name", None),
-        "ima_knowledge_base_id": getattr(job, "ima_knowledge_base_id", None),
-        "ima_knowledge_base_name": getattr(job, "ima_knowledge_base_name", None),
-        "ima_knowledge_folder_id": getattr(job, "ima_knowledge_folder_id", None),
-        "ima_knowledge_folder_name": getattr(job, "ima_knowledge_folder_name", None),
-        "weekly_period": getattr(job, "weekly_period", None),
-        "weekly_start_day": getattr(job, "weekly_start_day", None),
-        "weekly_start_time": getattr(job, "weekly_start_time", None),
-        "weekly_end_day": getattr(job, "weekly_end_day", None),
-        "weekly_end_time": getattr(job, "weekly_end_time", None),
-        "topic_text_layout": getattr(job, "topic_text_layout", "per_topic") or "per_topic",
-        "topic_text_merge_threshold": getattr(job, "topic_text_merge_threshold", 3) or 3,
-        "topic_image_enabled": bool(getattr(job, "topic_image_enabled", False)),
-        "topic_image_layout": getattr(job, "topic_image_layout", "single") or "single",
-        "topic_image_merge_threshold": getattr(job, "topic_image_merge_threshold", 3) or 3,
-        "topic_image_backup_enabled": bool(getattr(job, "topic_image_backup_enabled", False)),
-        "topic_image_backup_path": getattr(job, "topic_image_backup_path", None),
-        "image_prompt_template_id": getattr(job, "image_prompt_template_id", None),
-        "image_prompt": getattr(job, "image_prompt", None),
-        "image_split_enabled": bool(getattr(job, "image_split_enabled", False)),
-        "image_split_prompt": getattr(job, "image_split_prompt", None),
-        "image_aspect_ratio": getattr(job, "image_aspect_ratio", "auto") or "auto",
-        "image_resolution": getattr(job, "image_resolution", "auto") or "auto",
-        "max_image_count": getattr(job, "max_image_count", 6) or 6,
-    }
+    data["chatlog_backup_enabled"] = chatlog_backup_enabled
+    if data.get("chatlog_backup_formats") is None and chatlog_backup_enabled:
+        data["chatlog_backup_formats"] = ["txt"]
+    return data
 
 
 def _load_json(raw: str | None, default):

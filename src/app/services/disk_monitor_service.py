@@ -685,7 +685,7 @@ def _estimate_chatlog_decrypt_write_bytes(
 
 def _chatlog_work_dir(db: Session) -> str:
     entity = db.query(ChatRecordSetting).order_by(ChatRecordSetting.id.asc()).first()
-    return entity.chatlog_work_dir if entity and entity.chatlog_work_dir else r"C:\Users\Limmer\Documents\chatlog"
+    return entity.chatlog_work_dir if entity and entity.chatlog_work_dir else settings.chatlog_work_dir
 
 
 def _parse_context_time(value: Optional[str]) -> Optional[datetime]:

@@ -13,7 +13,9 @@ from ..repositories.model_repo import ModelRepository
 from ..repositories.prompt_template_repo import PromptTemplateRepository
 from ..repositories.task_repo import TaskRepository
 from ..repositories.webhook_repo import WebhookRepository
-from ..schemas.job import JobCreate, JobOut, JobUpdate
+from pydantic_core import PydanticUndefined
+
+from ..schemas.job import JobBase, JobCreate, JobOut, JobUpdate
 from ..schemas.task import TaskCreate, TaskOut, TaskUpdate
 from ..utils.converters import job_to_dict, task_to_dict
 from . import image_card_service, topic_card_service
@@ -512,6 +514,17 @@ def _apply_github_settings(
     return obj_in
 
 
+def _job_base_defaults() -> dict:
+    """从 JobBase schema 派生字段默认值，避免与 pydantic 定义重复维护。"""
+    defaults: dict = {}
+    for name, field in JobBase.model_fields.items():
+        if field.default is not PydanticUndefined and field.default is not None:
+            defaults[name] = field.default
+        elif field.default_factory is not None:
+            defaults[name] = field.default_factory()
+    return defaults
+
+
 def _apply_job_feature_settings(obj_in: dict, *, is_update: bool) -> dict:
     def ensure_default(key: str, default):
         if key in obj_in:
@@ -520,14 +533,9 @@ def _apply_job_feature_settings(obj_in: dict, *, is_update: bool) -> dict:
         elif not is_update:
             obj_in[key] = default
 
-    ensure_default("message_stats_enabled", False)
-    ensure_default("message_stats_path", "backups/message_reports")
-    ensure_default("message_stats_filename_template", "每日群成员发言数量统计_{YYYY-MM-DD}")
-    ensure_default("message_stats_filename_date_offset_days", -1)
-    ensure_default("message_stats_github_enabled", False)
-    ensure_default("message_stats_github_filename_template", "每日群成员发言数量统计_{YYYY-MM-DD}")
-    ensure_default("message_stats_github_filename_date_offset_days", 0)
-    ensure_default("message_stats_github_root", "xinjian")
+    for key, default in _job_base_defaults().items():
+        ensure_default(key, default)
+
     message_stats_enabled = obj_in.get("message_stats_enabled")
     if message_stats_enabled:
         formats = obj_in.get("message_stats_formats")
@@ -539,10 +547,6 @@ def _apply_job_feature_settings(obj_in: dict, *, is_update: bool) -> dict:
         if "message_stats_github_enabled" in obj_in:
             obj_in["message_stats_github_enabled"] = False
 
-    ensure_default("chatlog_backup_enabled", False)
-    ensure_default("chatlog_backup_path", "backups/chatlogs")
-    ensure_default("chatlog_backup_filename_template", "聊天记录_{week_start}_{week_end}")
-    ensure_default("chatlog_backup_filename_date_offset_days", 0)
     if obj_in.get("chatlog_backup_enabled"):
         formats = obj_in.get("chatlog_backup_formats")
         if not formats:
@@ -551,13 +555,6 @@ def _apply_job_feature_settings(obj_in: dict, *, is_update: bool) -> dict:
         if "chatlog_backup_formats" in obj_in:
             obj_in["chatlog_backup_formats"] = None
 
-    ensure_default("model_output_backup_enabled", False)
-    ensure_default("model_output_path", "backups/model_outputs")
-    ensure_default("model_output_filename_template", "模型输出_{YYYY-MM-DD}")
-    ensure_default("model_output_filename_date_offset_days", -1)
-    ensure_default("ima_sync_enabled", False)
-    ensure_default("ima_use_default_account", True)
-    ensure_default("ima_use_default_target", True)
     if obj_in.get("model_output_backup_enabled"):
         formats = obj_in.get("model_output_formats")
         if not formats:
@@ -572,27 +569,6 @@ def _apply_job_feature_settings(obj_in: dict, *, is_update: bool) -> dict:
             obj_in["ima_account_id"] = None
     if obj_in.get("ima_use_default_account") is True and "ima_account_id" in obj_in:
         obj_in["ima_account_id"] = None
-
-    ensure_default("weekly_period", "previous_week")
-    ensure_default("weekly_start_day", 0)
-    ensure_default("weekly_start_time", "00:00")
-    ensure_default("weekly_end_day", 6)
-    ensure_default("weekly_end_time", "24:00")
-    ensure_default("topic_text_layout", "per_topic")
-    ensure_default("topic_text_merge_threshold", 3)
-    ensure_default("topic_image_enabled", False)
-    ensure_default("topic_image_layout", "single")
-    ensure_default("topic_image_merge_threshold", 3)
-    ensure_default("topic_image_backup_enabled", False)
-    ensure_default("topic_image_backup_path", None)
-    ensure_default("image_aspect_ratio", "auto")
-    ensure_default("image_resolution", "auto")
-    ensure_default("max_image_count", 12)
-    ensure_default("disk_alert_enabled", False)
-    ensure_default("disk_alert_threshold_bytes", 100 * 1024 * 1024)
-
-    ensure_default("html_backup_filename_template", None)
-    ensure_default("html_backup_filename_date_offset_days", -1)
 
     for key in (
         "message_stats_filename_date_offset_days",

@@ -17,7 +17,7 @@ class ChatRecordSettingsBase(BaseModel):
     chatlog_decrypt_cache_enabled: bool = True
     chatlog_decrypt_timeout_sec: int = Field(default=300, ge=1)
     chatlog_decrypt_cache_buffer_sec: int = Field(default=0, ge=0)
-    chatlog_work_dir: str = r"C:\Users\Limmer\Documents\chatlog"
+    chatlog_work_dir: str = ""
     weflow_base_url: str = "http://127.0.0.1:5031"
     weflow_token: Optional[str] = None
     weflow_page_limit: int = Field(default=1000, ge=1, le=10000)

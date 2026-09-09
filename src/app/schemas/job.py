@@ -1,9 +1,10 @@
 """Pydantic schemas for Job entity."""
 
+import json
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .base import ORMBase
 
@@ -253,6 +254,16 @@ class JobUpdate(BaseModel):
         return values
 
 
+def _load_json_list(value: Any) -> Any:
+    """ORM 的 JSON 列表存为 TEXT；schema 直接从 ORM 校验时兼容字符串/列表两种输入。"""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    return value
+
+
 class JobOut(ORMBase):
     task_id: int
     name: str
@@ -295,7 +306,7 @@ class JobOut(ORMBase):
     message_stats_github_filename_template: Optional[str]
     message_stats_github_filename_date_offset_days: int
     message_stats_github_root: Optional[str]
-    chatlog_backup_enabled: bool
+    chatlog_backup_enabled: Optional[bool]  # ORM 存 NULL 时由读取侧按 task.store_chatlog 三态回落
     chatlog_backup_formats: Optional[List[str]]
     chatlog_backup_path: Optional[str]
     chatlog_backup_filename_template: Optional[str]
@@ -336,6 +347,18 @@ class JobOut(ORMBase):
     image_aspect_ratio: ImageAspectRatio = "auto"
     image_resolution: ImageResolution = "auto"
     max_image_count: int = 6
+
+    @field_validator(
+        "weekdays",
+        "message_stats_formats",
+        "chatlog_backup_formats",
+        "model_output_formats",
+        mode="before",
+        check_fields=False,
+    )
+    @classmethod
+    def _parse_json_text_columns(cls, value: Any) -> Any:
+        return _load_json_list(value)
 
 
 class JobReorderPayload(BaseModel):
