@@ -1,10 +1,16 @@
 /**
  * 图片卡片配置分区。从 JobFormModal 拆出，逻辑原样搬移。
  */
-import { Button, Form, Input, InputNumber, Popover, Select, Space, Switch, Typography } from "antd";
+import { Button, Form, Input, InputNumber, Popover, Radio, Select, Space, Switch, Typography } from "antd";
 import { QuestionCircleOutlined } from "@ant-design/icons";
 import { DEFAULT_IMAGE_SPLIT_PROMPT } from "../../../services/promptTemplates";
 import type { PromptTemplate } from "../../../services/promptTemplates";
+
+const FONT_THEMES: { value: "A" | "B" | "C"; label: string; desc: string }[] = [
+  { value: "A", label: "A · 手账黄油", desc: "庆科黄油体标题 + 沐瑶手写金句（推荐）" },
+  { value: "B", label: "B · 稳重黑体", desc: "优设标题黑 + 阿里巴巴普惠体" },
+  { value: "C", label: "C · 活泼圆体", desc: "站酷快乐体标题 + 阿里妈妈方圆体正文 + 悠哉金句" }
+];
 
 function ImageCardSection({
   imagePromptTemplateOptions,
@@ -15,9 +21,58 @@ function ImageCardSection({
 }) {
   const form = Form.useFormInstance();
   const imageSplitEnabled = Form.useWatch("image_split_enabled", form);
+  const cardRenderer = Form.useWatch("card_renderer", form);
+  const cardFontTheme = Form.useWatch("card_font_theme", form);
 
   return (
     <>
+      <Form.Item
+        name="card_renderer"
+        label="出图方式"
+        tooltip="本地渲染器：用内置排版引擎出图，秒级完成、版式固定、文字零误差，不消耗图片模型额度；AI 直出：调用图片模型重绘，风格更自由但偶有文字偏差。"
+        rules={[{ required: true, message: "请选择出图方式" }]}
+      >
+        <Select
+          options={[
+            { label: "本地渲染器（推荐）", value: "local" },
+            { label: "AI 直出", value: "ai" }
+          ]}
+        />
+      </Form.Item>
+      {cardRenderer === "local" ? (
+        <Form.Item
+          name="card_font_theme"
+          label="字体主题"
+          tooltip="本地渲染器的三套字体组合，右侧缩略图为实际渲染效果。"
+          rules={[{ required: true, message: "请选择字体主题" }]}
+        >
+          <Radio.Group>
+            <Space direction="vertical" size={12}>
+              {FONT_THEMES.map((item) => (
+                <Radio key={item.value} value={item.value}>
+                  <Space align="start">
+                    <span style={{ fontWeight: 600 }}>{item.label}</span>
+                    <img
+                      src={`/fonts-preview/${item.value}.png`}
+                      alt={`${item.label} 预览`}
+                      style={{
+                        width: 132,
+                        borderRadius: 6,
+                        border: cardFontTheme === item.value ? "2px solid #1677ff" : "1px solid #e5e5e5"
+                      }}
+                    />
+                  </Space>
+                  <Typography.Text type="secondary" style={{ display: "block", marginLeft: 0 }}>
+                    {item.desc}
+                  </Typography.Text>
+                </Radio>
+              ))}
+            </Space>
+          </Radio.Group>
+        </Form.Item>
+      ) : null}
+      {cardRenderer !== "local" ? (
+      <>
       <Form.Item
         name="image_prompt_template_id"
         label="图片提示词模板"
@@ -95,6 +150,7 @@ function ImageCardSection({
           </Space>
         </>
       ) : null}
+      </>) : null}
       <Form.Item
         name="image_aspect_ratio"
         label="图片比例"

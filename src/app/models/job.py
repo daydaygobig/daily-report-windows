@@ -92,6 +92,8 @@ class Job(BaseModel):
     image_aspect_ratio = Column(String(20), nullable=False, default="auto")
     image_resolution = Column(String(10), nullable=False, default="auto")
     max_image_count = Column(Integer, nullable=False, default=6)
+    card_renderer = Column(String(10), nullable=False, default="ai")
+    card_font_theme = Column(String(10), nullable=False, default="A")
 
     task = relationship("Task", back_populates="jobs")
     executions = relationship("Execution", back_populates="job", cascade="all, delete-orphan")

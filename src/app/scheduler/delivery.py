@@ -51,6 +51,43 @@ class DeliveryMixin:
             max(int(getattr(job, "retry_interval_sec", 0) or 0), 1),
         )
 
+    async def _skip_image_run_with_notice(
+        self,
+        db,
+        task: Task,
+        job: Job,
+        execution: Execution,
+        *,
+        raw_response: str,
+        renderer: Optional[str] = None,
+    ) -> None:
+        """文本模型判定本次无生图内容：推送提示语并记录跳过元数据（本地/AI 渲染共用）。"""
+        notice = image_card_service.NO_IMAGE_CONTENT_NOTICE
+        execution.summary_md = notice
+        webhooks = self._load_push_webhooks(db, task)
+        notice_pushed = False
+        if webhooks:
+            notice_pushed = await self._push_feishu(
+                webhooks=webhooks,
+                task=task,
+                job=job,
+                summary=notice,
+            )
+        meta: Dict[str, Any] = {
+            "type": "image_card",
+            "block_count": 0,
+            "skipped": "no_image_content",
+            "skip_reason": "文本模型判定本次没有符合条件的内容",
+            "model_output": raw_response,
+            "notice": notice,
+            "notice_pushed": notice_pushed,
+            "deliveries": [],
+        }
+        if renderer:
+            meta["renderer"] = renderer
+        execution.raw_response = json.dumps(meta, ensure_ascii=False)
+        logger.info("图片卡片无符合条件内容，跳过生图 task={} job={}", task.id, job.id)
+
     async def _report_delivery_failures(
         self,
         db,
@@ -232,6 +269,181 @@ class DeliveryMixin:
             "layout": image.layout,
         }
 
+    async def _handle_image_card_result_local(
+        self,
+        *,
+        db,
+        task: Task,
+        job: Job,
+        execution: Execution,
+        raw_response: str,
+        selected_topic: Optional[str] = None,
+    ) -> None:
+        """本地渲染器模式：内容块交给 card_renderer/render_card.py 出图（自带二维码），跳过 AI 生图与拼接。"""
+        max_count = max(int(getattr(job, "max_image_count", 6) or 6), 1)
+        font_theme = str(getattr(job, "card_font_theme", None) or "A").strip().upper() or "A"
+        # 本地渲染必须有 上/下 内容块结构：拆分关闭时也按拆分规则解析，
+        # 模型没输出内容块会得到明确报错，而不是把整篇文本塞给渲染器失败
+        blocks = image_card_service.parse_content_blocks(
+            raw_response,
+            split_enabled=True,
+            max_count=max_count,
+        )
+        block_total = len(blocks)
+        blocks_kinds = [image_card_service.block_card_kind(block) for block in blocks]
+        if not blocks:
+            await self._skip_image_run_with_notice(
+                db,
+                task,
+                job,
+                execution,
+                raw_response=raw_response,
+                renderer="local",
+            )
+            return
+        if selected_topic:
+            blocks = _select_image_blocks(blocks, selected_topic, job=job)
+            if not blocks:
+                raise RuntimeError(f"未找到匹配的内容块「{selected_topic}」")
+        # 配对唯一真源：带标记按标记配对（错序/漏块在此报出具体块序号），
+        # 无标记的历史内容按位置相邻配对
+        card_pairs = image_card_service.resolve_local_card_pairs(blocks)
+        block_pairs = [(blocks[top - 1], blocks[bottom - 1]) for top, bottom in card_pairs]
+        card_count = len(card_pairs)
+        backup_source = "\n\n".join(f"{top}\n\n{bottom}" for top, bottom in block_pairs)
+
+        webhooks = self._load_push_webhooks(db, task)
+        if not webhooks:
+            raise RuntimeError("图片卡片任务没有可用的推送 Webhook")
+        webhook_credentials = []
+        for webhook in webhooks:
+            app_id = (getattr(webhook, "feishu_app_id", None) or "").strip()
+            secret_cipher = getattr(webhook, "feishu_app_secret_cipher", None)
+            if not app_id or not secret_cipher:
+                raise RuntimeError(f"Webhook「{webhook.name}」未配置飞书应用 App ID / App Secret")
+            webhook_credentials.append((webhook, app_id, decrypt_value(secret_cipher)))
+
+        qr_url = settings.qr_code_url if (settings.qr_code_enabled and settings.qr_code_url) else None
+        max_retry, retry_interval = self._job_retry_params(job)
+
+        logger.info(
+            "案例卡本地渲染开始 font={} block_total={} card_count={} qr={}",
+            font_theme,
+            block_total,
+            card_count,
+            bool(qr_url),
+        )
+        rendered = await asyncio.to_thread(
+            image_card_service.render_case_cards_locally,
+            block_pairs,
+            font_theme=font_theme,
+            qr_url=qr_url,
+        )
+        images = rendered["cards"]
+        if len(images) != card_count:
+            raise RuntimeError(f"本地渲染产出 {len(images)} 张长图，与预期 {card_count} 张不一致")
+        render_warnings = list(rendered.get("warnings") or [])
+        if render_warnings:
+            logger.warning(
+                "案例卡本地渲染告警（内容溢出会触发整卡缩放，建议收紧提示词字数约束）：{}",
+                "；".join(render_warnings),
+            )
+
+        try:
+            flat_halves = [half for pair in rendered.get("halves", []) for half in pair if half]
+            backup_meta = image_card_service.backup_execution_images(
+                getattr(execution, "id", None),
+                halves=flat_halves,
+                cards=images,
+                source_text=backup_source,
+            )
+        except Exception as exc:
+            logger.warning(
+                "案例卡图片落盘备份失败：{}",
+                _format_exception_message("图片备份", exc),
+            )
+            backup_meta = {}
+
+        meta: Dict[str, Any] = {
+            "type": "image_card",
+            "renderer": "local",
+            "font_theme": font_theme,
+            "block_count": len(blocks),
+            "block_total": block_total,
+            "blocks_kinds": blocks_kinds,
+            "cards": card_pairs,
+            "card_count": card_count,
+            "selected_topic": selected_topic,
+            "qr_embedded_by_renderer": bool(qr_url),
+            "local_backup": backup_meta,
+            "render_warnings": render_warnings,
+            "deliveries": [],
+        }
+        failures: List[Dict[str, Any]] = []
+        for position, content in enumerate(images, start=1):
+            image_meta: Dict[str, Any] = {
+                "image_index": position,
+                "parts": card_pairs[position - 1] if position <= len(card_pairs) else [],
+                "status": "success",
+                "renderer": "local",
+                "font_theme": font_theme,
+                "size_bytes": len(content),
+                "qr_embedded": bool(qr_url),
+                "webhooks": [],
+            }
+            dimensions = image_generation.detect_image_dimensions(content, "image/png")
+            if dimensions:
+                image_meta["actual_width"] = dimensions[0]
+                image_meta["actual_height"] = dimensions[1]
+                image_meta["actual_size"] = f"{dimensions[0]}x{dimensions[1]}"
+            for webhook, app_id, app_secret in webhook_credentials:
+                delivery = {
+                    "webhook_id": getattr(webhook, "id", None),
+                    "webhook_name": getattr(webhook, "name", None),
+                    "status": "pending",
+                }
+                try:
+                    image_key = await self._deliver_image_bytes(
+                        webhook=webhook,
+                        app_id=app_id,
+                        app_secret=app_secret,
+                        image_bytes=content,
+                        filename=f"image-card-{position}.png",
+                        retries=max_retry,
+                        retry_interval=retry_interval,
+                        label="图片卡片推送",
+                    )
+                    delivery.update({"status": "success", "image_key": image_key})
+                except Exception as exc:
+                    error_message = _format_exception_message("图片卡片推送", exc)
+                    delivery.update({"status": "failed", "error": error_message})
+                    failures.append(
+                        {
+                            "image_index": position,
+                            "webhook_id": getattr(webhook, "id", None),
+                            "webhook_name": getattr(webhook, "name", None),
+                            "error": error_message,
+                        }
+                    )
+                image_meta["webhooks"].append(delivery)
+            meta["deliveries"].append(image_meta)
+
+        if failures:
+            error_message = "图片卡片推送失败：" + "；".join(
+                f"第 {item['image_index']} 张 / {item.get('webhook_name') or item.get('webhook_id')}：{item['error']}"
+                for item in failures
+            )
+            await self._report_delivery_failures(
+                db,
+                task,
+                job,
+                execution,
+                category="image_card",
+                message=error_message,
+                failures=failures,
+            )
+        execution.raw_response = json.dumps(meta, ensure_ascii=False)
+
     async def _handle_image_card_result(
         self,
         *,
@@ -242,6 +454,17 @@ class DeliveryMixin:
         raw_response: str,
         selected_topic: Optional[str] = None,
     ) -> None:
+        card_renderer_mode = str(getattr(job, "card_renderer", None) or "ai").strip().lower() or "ai"
+        if card_renderer_mode == "local":
+            await self._handle_image_card_result_local(
+                db=db,
+                task=task,
+                job=job,
+                execution=execution,
+                raw_response=raw_response,
+                selected_topic=selected_topic,
+            )
+            return
         max_count = max(int(getattr(job, "max_image_count", 6) or 6), 1)
         blocks = image_card_service.parse_content_blocks(
             raw_response,
@@ -249,6 +472,7 @@ class DeliveryMixin:
             max_count=max_count,
         )
         block_total = len(blocks)
+        blocks_kinds = [image_card_service.block_card_kind(block) for block in blocks]
         blocks_preview = [
             {"index": index, "text": block[:60]} for index, block in enumerate(blocks, start=1)
         ]
@@ -261,31 +485,13 @@ class DeliveryMixin:
                 )
             blocks = selected_blocks
         if not blocks:
-            notice = image_card_service.NO_IMAGE_CONTENT_NOTICE
-            execution.summary_md = notice
-            webhooks = self._load_push_webhooks(db, task)
-            notice_pushed = False
-            if webhooks:
-                notice_pushed = await self._push_feishu(
-                    webhooks=webhooks,
-                    task=task,
-                    job=job,
-                    summary=notice,
-                )
-            execution.raw_response = json.dumps(
-                {
-                    "type": "image_card",
-                    "block_count": 0,
-                    "skipped": "no_image_content",
-                    "skip_reason": "文本模型判定本次没有符合条件的生图内容",
-                    "model_output": raw_response,
-                    "notice": notice,
-                    "notice_pushed": notice_pushed,
-                    "deliveries": [],
-                },
-                ensure_ascii=False,
+            await self._skip_image_run_with_notice(
+                db,
+                task,
+                job,
+                execution,
+                raw_response=raw_response,
             )
-            logger.info("图片卡片无符合条件内容，跳过生图 task={} job={}", task.id, job.id)
             return
         image_prompt = (getattr(job, "image_prompt", None) or "").strip()
         if not image_prompt:
@@ -314,6 +520,7 @@ class DeliveryMixin:
             "type": "image_card",
             "block_count": len(blocks),
             "block_total": block_total,
+            "blocks_kinds": blocks_kinds,
             "blocks_preview": blocks_preview,
             "selected_topic": selected_topic,
             "image_model_id": image_model_id,
@@ -404,13 +611,20 @@ class DeliveryMixin:
                 }
             )
 
-        # 阶段二：拼卡。1:3 比例下，按生成顺序相邻两张（同一话题的上卡+下卡）上下拼接成
-        # 一张长图。拼接由代码完成（像素级对齐），不依赖生图模型输出可拼接的图。
+        # 阶段二：拼卡。1:3 比例下，同一话题的上卡+下卡上下拼接成一张长图。
+        # 带拼卡标记的内容按标记配对（错序在 parse 阶段已拦截），无标记的历史内容
+        # 退回按生成顺序相邻两张配对。拼接由代码完成（像素级对齐），不依赖生图模型输出可拼接的图。
         stitch_pairs = aspect_ratio == "1:3" and len(generated_items) > 1
         final_images: List[Dict[str, Any]] = []
         if stitch_pairs:
-            for start in range(0, len(generated_items), 2):
-                group = generated_items[start : start + 2]
+            card_groups = image_card_service.resolve_card_pairs(
+                blocks,
+                split_enabled=bool(getattr(job, "image_split_enabled", False)),
+            )
+            if not image_card_service.has_card_markers(blocks):
+                meta["stitch_warning"] = "内容块无【拼卡·上/下】标记，按相邻位置配对"
+            for group_indexes in card_groups:
+                group = [generated_items[index - 1] for index in group_indexes]
                 merged_content = await asyncio.to_thread(
                     image_card_service.stitch_images_vertically,
                     [item["image"].content for item in group],
@@ -440,6 +654,22 @@ class DeliveryMixin:
                         "attempts": [item["attempts"]],
                     }
                 )
+
+        try:
+            backup_meta = image_card_service.backup_execution_images(
+                getattr(execution, "id", None),
+                halves=[item["image"].content for item in generated_items],
+                cards=[item["image"].content for item in final_images],
+                source_text=raw_response,
+            )
+        except Exception as exc:
+            logger.warning(
+                "案例卡图片落盘备份失败：{}",
+                _format_exception_message("图片备份", exc),
+            )
+            backup_meta = {}
+        if backup_meta:
+            meta["local_backup"] = backup_meta
 
         # 阶段三：二维码叠加（叠加在拼接后的成图上，每张长图一个码）
         for position, item in enumerate(final_images, start=1):

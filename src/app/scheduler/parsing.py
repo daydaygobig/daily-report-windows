@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from ..models.job import Job
+from ..services import image_card_service
 
 
 def _time_str_to_minutes(value: str) -> int:
@@ -70,16 +71,21 @@ def _select_image_blocks(
 
     1:3 比例且块数大于 1 时相邻两块拼成一张长图，此时命中任何一块都会
     返回该块所在的整组（两块），保证生成的是完整的一张长图。
+    内容块带【拼卡·上/下】标记时按标记配对成组（错序抛错），
+    避免把不同话题的两块并成一组。
     """
     stripped = selected_topic.strip()
     stitch_pairs = (
         getattr(job, "image_aspect_ratio", "auto") == "1:3" and len(blocks) > 1
     )
-    groups: List[List[int]] = (
-        [list(range(start, min(start + 2, len(blocks) + 1))) for start in range(1, len(blocks) + 1, 2)]
-        if stitch_pairs
-        else [[index] for index in range(1, len(blocks) + 1)]
-    )
+    if stitch_pairs and image_card_service.has_card_markers(blocks):
+        groups = [list(pair) for pair in image_card_service.pair_card_blocks(blocks)]
+    else:
+        groups: List[List[int]] = (
+            [list(range(start, min(start + 2, len(blocks) + 1))) for start in range(1, len(blocks) + 1, 2)]
+            if stitch_pairs
+            else [[index] for index in range(1, len(blocks) + 1)]
+        )
     if stripped.isdigit():
         index = int(stripped)
         if not 1 <= index <= len(blocks):

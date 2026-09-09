@@ -1,12 +1,17 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from app.integrations.image_generation import ImageGenerationError
 from app.scheduler import service as scheduler_module
 from app.scheduler.service import SchedulerService
 from app.services import image_card_service
 from app.services.execution_service import _image_card_meta
+
+TOP = image_card_service.CARD_TOP_MARKER
+BOTTOM = image_card_service.CARD_BOTTOM_MARKER
 
 
 def test_split_blocks_from_fixed_markers():
@@ -90,6 +95,116 @@ def test_image_execution_meta_reports_no_content_as_skipped():
 def test_split_prompt_requires_both_parameters():
     with pytest.raises(ValueError, match="block_start"):
         image_card_service.normalize_split_prompt(True, "只包含 ${block_start}")
+
+
+# ---------------- 本地渲染器调用 ----------------
+
+
+def _fake_renderer_dir(tmp_path: Path) -> Path:
+    renderer_dir = tmp_path / "card_renderer"
+    renderer_dir.mkdir()
+    (renderer_dir / "render_card.py").write_text("# fake", encoding="utf-8")
+    return renderer_dir
+
+
+def test_render_case_cards_locally_returns_renderer_warnings(monkeypatch, tmp_path):
+    renderer_dir = _fake_renderer_dir(tmp_path)
+    monkeypatch.setattr(image_card_service, "card_renderer_directory", lambda: renderer_dir)
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["payload"] = json.loads(Path(cmd[2]).read_text(encoding="utf-8"))
+        outdir = Path(cmd[cmd.index("--outdir") + 1])
+        half = outdir / "half"
+        half.mkdir(parents=True)
+        (half / "card1_top.png").write_bytes(b"t")
+        (half / "card1_bottom.png").write_bytes(b"b")
+        (outdir / "card_1.png").write_bytes(b"c")
+        return SimpleNamespace(
+            returncode=0,
+            stdout="\n".join(
+                [
+                    "[card 1] 校验: 事实字段应为3行，实际2行",
+                    "[card 1] 上卡内容溢出模块: module-card",
+                    "[card 1] 完成 -> card_1.png",
+                ]
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(image_card_service.subprocess, "run", fake_run)
+
+    result = image_card_service.render_case_cards_locally(
+        [("【拼卡·上】\n上卡内容", "【拼卡·下】\n下卡内容")]
+    )
+
+    # 服务端完成配对后以 JSON 契约传给渲染脚本，不再重包装文本协议
+    assert "--input-json" in seen["cmd"]
+    assert seen["payload"] == {
+        "cards": [{"top": "【拼卡·上】\n上卡内容", "bottom": "【拼卡·下】\n下卡内容"}]
+    }
+    assert result["cards"] == [b"c"]
+    assert result["halves"] == [(b"t", b"b")]
+    assert result["warnings"] == [
+        "[card 1] 校验: 事实字段应为3行，实际2行",
+        "[card 1] 上卡内容溢出模块: module-card",
+    ]
+
+
+def test_render_case_cards_locally_failure_raises_image_generation_error(monkeypatch, tmp_path):
+    """渲染失败必须抛 ImageGenerationError 且带上子进程错误详情，而不是 NameError。"""
+    renderer_dir = _fake_renderer_dir(tmp_path)
+    monkeypatch.setattr(image_card_service, "card_renderer_directory", lambda: renderer_dir)
+    monkeypatch.setattr(
+        image_card_service.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="chromium 崩溃"),
+    )
+
+    with pytest.raises(ImageGenerationError, match="chromium 崩溃"):
+        image_card_service.render_case_cards_locally([("上卡", "下卡")])
+
+
+def test_render_case_cards_locally_missing_script_raises_image_generation_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        image_card_service,
+        "card_renderer_directory",
+        lambda: tmp_path / "missing",
+    )
+
+    with pytest.raises(ImageGenerationError, match="渲染脚本不存在"):
+        image_card_service.render_case_cards_locally([("上卡", "下卡")])
+
+
+# ---------------- 本地渲染配对唯一入口 ----------------
+
+
+def test_resolve_local_card_pairs_uses_markers_when_present():
+    blocks = [
+        f"{TOP}\n话题1上",
+        f"{BOTTOM}\n话题1下",
+        f"{TOP}\n话题2上",
+        f"{BOTTOM}\n话题2下",
+    ]
+    assert image_card_service.resolve_local_card_pairs(blocks) == [(1, 2), (3, 4)]
+
+
+def test_resolve_local_card_pairs_unmarked_falls_back_to_positional():
+    assert image_card_service.resolve_local_card_pairs(["卡一上", "卡一下", "卡二上", "卡二下"]) == [
+        (1, 2),
+        (3, 4),
+    ]
+
+
+def test_resolve_local_card_pairs_rejects_odd_unmarked_blocks():
+    with pytest.raises(ValueError, match="实际 3 个"):
+        image_card_service.resolve_local_card_pairs(["上", "下", "落单"])
+
+
+def test_resolve_local_card_pairs_rejects_empty_blocks():
+    with pytest.raises(ValueError, match="没有可渲染的内容块"):
+        image_card_service.resolve_local_card_pairs([])
 
 
 def test_split_prompt_rewrites_legacy_image_prompt_wording():

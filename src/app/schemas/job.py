@@ -12,6 +12,8 @@ TopicTextLayout = Literal["per_topic", "merged", "auto"]
 TopicImageLayout = Literal["single", "collection", "auto"]
 ImageAspectRatio = Literal["auto", "1:1", "3:2", "2:3", "9:16", "1:3"]
 ImageResolution = Literal["auto", "1k", "2k", "4k"]
+CardRenderer = Literal["ai", "local"]
+CardFontTheme = Literal["A", "B", "C"]
 
 
 class JobBase(BaseModel):
@@ -91,6 +93,8 @@ class JobBase(BaseModel):
     image_aspect_ratio: ImageAspectRatio = "auto"
     image_resolution: ImageResolution = "auto"
     max_image_count: int = Field(default=6, ge=1, le=20)
+    card_renderer: CardRenderer = "ai"
+    card_font_theme: CardFontTheme = "A"
 
     @model_validator(mode="after")
     def validate_job(cls, values: "JobBase"):
@@ -225,6 +229,8 @@ class JobUpdate(BaseModel):
     image_aspect_ratio: Optional[ImageAspectRatio] = None
     image_resolution: Optional[ImageResolution] = None
     max_image_count: Optional[int] = Field(default=None, ge=1, le=20)
+    card_renderer: Optional[CardRenderer] = None
+    card_font_theme: Optional[CardFontTheme] = None
 
     @model_validator(mode="after")
     def validate_job(cls, values: "JobUpdate"):

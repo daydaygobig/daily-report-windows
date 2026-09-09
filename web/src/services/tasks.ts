@@ -89,6 +89,8 @@ export type Job = {
   image_aspect_ratio: "auto" | "1:1" | "3:2" | "2:3" | "9:16" | "1:3";
   image_resolution: "auto" | "1k" | "2k" | "4k";
   max_image_count: number;
+  card_renderer?: "ai" | "local";
+  card_font_theme?: "A" | "B" | "C";
 };
 
 export type TopicTypeKey = "industry_business" | "work_methods" | "career_growth" | "mind_wellbeing";

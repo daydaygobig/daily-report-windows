@@ -23,6 +23,8 @@ def ensure_schema(engine: Engine) -> None:
     _ensure_column(engine, "jobs", "html_backup_filename_template", "TEXT")
     _ensure_column(engine, "jobs", "html_backup_filename_date_offset_days", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(engine, "jobs", "days_offset", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(engine, "jobs", "card_renderer", "TEXT NOT NULL DEFAULT 'ai'")
+    _ensure_column(engine, "jobs", "card_font_theme", "TEXT NOT NULL DEFAULT 'A'")
     _ensure_column(engine, "jobs", "display_order", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(engine, "executions", "html_backup_path", "TEXT")
     _ensure_column(engine, "executions", "deploy_status", "TEXT NOT NULL DEFAULT 'none'")
