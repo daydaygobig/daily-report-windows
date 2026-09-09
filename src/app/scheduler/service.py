@@ -21,6 +21,8 @@ from ..db import session_scope
 from ..models.disk_monitor import DiskIoRecord
 from ..models.execution import Execution
 from ..models.github_deployment import GithubDeployment
+from ..models.job import Job
+from ..models.task import Task
 from ..services import alert_service, disk_monitor_service
 from ..services.github_view_url import build_view_url
 from ..utils import message_stats as message_stats_utils
@@ -211,16 +213,15 @@ class SchedulerService(
                         if message_stats_result:
                             prompt_meta["message_count"] = message_stats_result.total_messages
                         if getattr(task, "task_type", "report") == "export":
-                            message_stats_github_artifact = await self._sync_message_stats_to_github(
-                                db=db,
+                            await self._sync_stats_and_collect(
+                                db,
                                 task=task,
                                 job=job,
                                 execution=execution,
                                 time_window=time_window,
-                                stats=message_stats_result,
+                                message_stats_result=message_stats_result,
+                                exported_files=exported_files,
                             )
-                            if message_stats_github_artifact:
-                                exported_files.append(message_stats_github_artifact)
                             execution.raw_request = json.dumps(
                                 {
                                     **prompt_meta,
@@ -240,12 +241,8 @@ class SchedulerService(
                             execution.prompt_tokens = 0
                             execution.completion_tokens = 0
                             execution.llm_model_name = None
-                            execution.deploy_status = "none"
-                            execution.deploy_url = None
-                            execution.deploy_error = None
-                            execution.github_config_id = None
-                            if attempt > 1:
-                                logger.info("Job {} 在第 {} 次重试后成功", job.id, attempt)
+                            self._clear_deploy_fields(execution)
+                            self._log_retry_success(job, attempt)
                             break
                         # 阶段性提交：释放 SQLite 写事务，避免长事务阻塞其他作业与页面写入。
                         db.commit()
@@ -354,23 +351,17 @@ class SchedulerService(
                             summary_snapshot = summary
                             execution.summary_md = summary
                             execution.summary_path = None
-                            execution.html_backup_path = None
-                            execution.deploy_status = "none"
-                            execution.deploy_url = None
-                            execution.deploy_error = None
-                            execution.github_config_id = None
-                            message_stats_github_artifact = await self._sync_message_stats_to_github(
-                                db=db,
+                            self._reset_card_delivery_fields(execution)
+                            await self._sync_stats_and_collect(
+                                db,
                                 task=task,
                                 job=job,
                                 execution=execution,
                                 time_window=time_window,
-                                stats=message_stats_result,
+                                message_stats_result=message_stats_result,
+                                exported_files=exported_files,
                             )
-                            if message_stats_github_artifact:
-                                exported_files.append(message_stats_github_artifact)
-                            if attempt > 1:
-                                logger.info("Job {} 在第 {} 次重试后成功", job.id, attempt)
+                            self._log_retry_success(job, attempt)
                             execution.status = "success"
                             db.commit()
                             break
@@ -383,23 +374,17 @@ class SchedulerService(
                                 raw_response=summary_snapshot or "",
                                 selected_topic=selected_topic,
                             )
-                            execution.html_backup_path = None
-                            execution.deploy_status = "none"
-                            execution.deploy_url = None
-                            execution.deploy_error = None
-                            execution.github_config_id = None
-                            message_stats_github_artifact = await self._sync_message_stats_to_github(
-                                db=db,
+                            self._reset_card_delivery_fields(execution)
+                            await self._sync_stats_and_collect(
+                                db,
                                 task=task,
                                 job=job,
                                 execution=execution,
                                 time_window=time_window,
-                                stats=message_stats_result,
+                                message_stats_result=message_stats_result,
+                                exported_files=exported_files,
                             )
-                            if message_stats_github_artifact:
-                                exported_files.append(message_stats_github_artifact)
-                            if attempt > 1:
-                                logger.info("Job {} 在第 {} 次重试后成功", job.id, attempt)
+                            self._log_retry_success(job, attempt)
                             execution.status = "success"
                             db.commit()
                             break
@@ -513,21 +498,17 @@ class SchedulerService(
                                     deployment_record.finished_at = datetime.now(tz=self._tz).replace(tzinfo=None)
                                 raise
                         else:
-                            execution.deploy_status = "none"
-                            execution.deploy_url = None
-                            execution.deploy_error = None
-                            execution.github_config_id = None
+                            self._clear_deploy_fields(execution)
 
-                        message_stats_github_artifact = await self._sync_message_stats_to_github(
-                            db=db,
+                        await self._sync_stats_and_collect(
+                            db,
                             task=task,
                             job=job,
                             execution=execution,
                             time_window=time_window,
-                            stats=message_stats_result,
+                            message_stats_result=message_stats_result,
+                            exported_files=exported_files,
                         )
-                        if message_stats_github_artifact:
-                            exported_files.append(message_stats_github_artifact)
 
                         push_webhook_ids = _parse_int_list(task.push_webhook_ids)
                         if push_webhook_ids:
@@ -548,8 +529,7 @@ class SchedulerService(
                                 retry_interval=retry_interval,
                                 label="飞书推送",
                             )
-                        if attempt > 1:
-                            logger.info("Job {} 在第 {} 次重试后成功", job.id, attempt)
+                        self._log_retry_success(job, attempt)
                         db.commit()
                         break
                     except asyncio.CancelledError as exc:
@@ -569,17 +549,16 @@ class SchedulerService(
                             if execution.deploy_error:
                                 deployment_record.error_msg = execution.deploy_error
                             deployment_record.finished_at = datetime.now(tz=self._tz).replace(tzinfo=None)
-                        if not execution.raw_request and time_window:
-                            fallback_meta = {
-                                "task_name": task.name,
-                                "chatlog_range": time_window.get("time_str"),
-                                "chatlog_label": f"{', '.join(talker_names)} · {time_window.get('time_str')}",
-                                "talkers": talker_names,
-                                "task_prompt": task.prompt,
-                            }
-                            if message_stats_result:
-                                fallback_meta["message_count"] = message_stats_result.total_messages
-                            execution.raw_request = json.dumps(fallback_meta, ensure_ascii=False)
+                        if not execution.raw_request:
+                            fallback_meta = self._fallback_prompt_meta(
+                                task,
+                                talker_names,
+                                time_window,
+                                message_stats_result,
+                                separator="·",
+                            )
+                            if fallback_meta:
+                                execution.raw_request = json.dumps(fallback_meta, ensure_ascii=False)
                         logger.warning("Job {} 执行被取消: {}", job.id, exc)
                         raise
                     except Exception as exc:  # pragma: no cover - protect scheduler
@@ -611,17 +590,16 @@ class SchedulerService(
                             if execution.deploy_error:
                                 deployment_record.error_msg = execution.deploy_error
                             deployment_record.finished_at = datetime.now(tz=self._tz).replace(tzinfo=None)
-                        if not execution.raw_request and time_window:
-                            fallback_meta = {
-                                "task_name": task.name,
-                                "chatlog_range": time_window.get("time_str"),
-                                "chatlog_label": f"{', '.join(talker_names)} 路 {time_window.get('time_str')}",
-                                "talkers": talker_names,
-                                "task_prompt": task.prompt,
-                            }
-                            if message_stats_result:
-                                fallback_meta["message_count"] = message_stats_result.total_messages
-                            execution.raw_request = json.dumps(fallback_meta, ensure_ascii=False)
+                        if not execution.raw_request:
+                            fallback_meta = self._fallback_prompt_meta(
+                                task,
+                                talker_names,
+                                time_window,
+                                message_stats_result,
+                                separator="路",
+                            )
+                            if fallback_meta:
+                                execution.raw_request = json.dumps(fallback_meta, ensure_ascii=False)
                         alert_service.create_alert(
                             db,
                             task_id=task.id,
@@ -673,6 +651,71 @@ class SchedulerService(
                 db.add(job)
                 db.commit()
         return execution_id
+
+    @staticmethod
+    def _clear_deploy_fields(execution: Execution) -> None:
+        """本次执行未走 GitHub 部署时，把部署相关字段归位为未部署状态。"""
+        execution.deploy_status = "none"
+        execution.deploy_url = None
+        execution.deploy_error = None
+        execution.github_config_id = None
+
+    @classmethod
+    def _reset_card_delivery_fields(cls, execution: Execution) -> None:
+        """卡片任务完成后的统一收尾：清空 HTML 备份路径与部署字段。"""
+        execution.html_backup_path = None
+        cls._clear_deploy_fields(execution)
+
+    async def _sync_stats_and_collect(
+        self,
+        db,
+        *,
+        task: Task,
+        job: Job,
+        execution: Execution,
+        time_window: dict,
+        message_stats_result,
+        exported_files: List[dict],
+    ) -> None:
+        """各分支共同的收尾：消息统计上传 GitHub 并把产物登记进 exported_files。"""
+        artifact = await self._sync_message_stats_to_github(
+            db=db,
+            task=task,
+            job=job,
+            execution=execution,
+            time_window=time_window,
+            stats=message_stats_result,
+        )
+        if artifact:
+            exported_files.append(artifact)
+
+    @staticmethod
+    def _log_retry_success(job: Job, attempt: int) -> None:
+        if attempt > 1:
+            logger.info("Job {} 在第 {} 次重试后成功", job.id, attempt)
+
+    @staticmethod
+    def _fallback_prompt_meta(
+        task: Task,
+        talker_names: List[str],
+        time_window: Optional[dict],
+        message_stats_result,
+        *,
+        separator: str,
+    ) -> Optional[dict]:
+        """异常路径下 raw_request 缺失时的兜底元数据；cancelled 与 failed 的分隔符沿用历史行为。"""
+        if not time_window:
+            return None
+        meta = {
+            "task_name": task.name,
+            "chatlog_range": time_window.get("time_str"),
+            "chatlog_label": f"{', '.join(talker_names)} {separator} {time_window.get('time_str')}",
+            "talkers": talker_names,
+            "task_prompt": task.prompt,
+        }
+        if message_stats_result:
+            meta["message_count"] = message_stats_result.total_messages
+        return meta
 
 
 # 向后兼容再导出：保持历史 `from app.scheduler.service import X` 引用不变。

@@ -38,6 +38,44 @@ from .parsing import (
 class DeliveryMixin:
     """图片卡/话题卡结果处理与 webhook 投递。"""
 
+    @staticmethod
+    def _load_push_webhooks(db, task: Task):
+        """读取任务配置的推送 webhook 列表（未配置时返回空列表）。"""
+        push_webhook_ids = _parse_int_list(task.push_webhook_ids)
+        return webhook_repo.get_by_ids(db, push_webhook_ids) if push_webhook_ids else []
+
+    @staticmethod
+    def _job_retry_params(job: Job) -> tuple[int, int]:
+        return (
+            max(int(getattr(job, "max_retry", 0) or 0), 0),
+            max(int(getattr(job, "retry_interval_sec", 0) or 0), 1),
+        )
+
+    async def _report_delivery_failures(
+        self,
+        db,
+        task: Task,
+        job: Job,
+        execution: Execution,
+        *,
+        category: str,
+        message: str,
+        failures: List[Dict[str, Any]],
+    ) -> None:
+        """卡片投递存在失败时的统一处理：标记执行失败 + 建告警 + 通知告警 webhook。"""
+        execution.status = "failed"
+        execution.error_msg = message
+        alert_service.create_alert(
+            db,
+            task_id=task.id,
+            job_id=job.id,
+            execution_id=execution.id,
+            category=category,
+            message=message,
+            payload={"job_id": job.id, "failures": failures},
+        )
+        await self._notify_alert_webhooks(db, task, job, message)
+
     def _resolve_card_header(self, webhook, task: Task, job: Optional[Job]) -> tuple[str, str, str]:
         mode = (getattr(webhook, "card_mode", "markdown") or "markdown").lower()
         color = getattr(webhook, "card_header_color", None)
@@ -225,8 +263,7 @@ class DeliveryMixin:
         if not blocks:
             notice = image_card_service.NO_IMAGE_CONTENT_NOTICE
             execution.summary_md = notice
-            push_webhook_ids = _parse_int_list(task.push_webhook_ids)
-            webhooks = webhook_repo.get_by_ids(db, push_webhook_ids) if push_webhook_ids else []
+            webhooks = self._load_push_webhooks(db, task)
             notice_pushed = False
             if webhooks:
                 notice_pushed = await self._push_feishu(
@@ -258,8 +295,7 @@ class DeliveryMixin:
         image_model_id = int(getattr(head_model, "id", 0) or 0)
         image_model = head_model
 
-        push_webhook_ids = _parse_int_list(task.push_webhook_ids)
-        webhooks = webhook_repo.get_by_ids(db, push_webhook_ids) if push_webhook_ids else []
+        webhooks = self._load_push_webhooks(db, task)
         if not webhooks:
             raise RuntimeError("图片卡片任务没有可用的推送 Webhook")
         webhook_credentials = []
@@ -273,8 +309,7 @@ class DeliveryMixin:
         aspect_ratio = getattr(job, "image_aspect_ratio", "auto") or "auto"
         resolution = getattr(job, "image_resolution", "auto") or "auto"
         image_size = image_card_service.resolve_image_size(aspect_ratio, resolution)
-        max_retry = max(int(getattr(job, "max_retry", 0) or 0), 0)
-        retry_interval = max(int(getattr(job, "retry_interval_sec", 0) or 0), 1)
+        max_retry, retry_interval = self._job_retry_params(job)
         meta: Dict[str, Any] = {
             "type": "image_card",
             "block_count": len(blocks),
@@ -488,18 +523,15 @@ class DeliveryMixin:
                 f"第 {item['image_index']} 张 / {item.get('webhook_name') or item.get('webhook_id')}：{item['error']}"
                 for item in failures
             )
-            execution.status = "failed"
-            execution.error_msg = error_message
-            alert_service.create_alert(
+            await self._report_delivery_failures(
                 db,
-                task_id=task.id,
-                job_id=job.id,
-                execution_id=execution.id,
+                task,
+                job,
+                execution,
                 category="image_card",
                 message=error_message,
-                payload={"job_id": job.id, "failures": failures},
+                failures=failures,
             )
-            await self._notify_alert_webhooks(db, task, job, error_message)
         execution.raw_response = json.dumps(meta, ensure_ascii=False)
 
     def _build_topic_card_image_failure_message(self, failures: List[Dict[str, Any]]) -> str:
@@ -524,8 +556,7 @@ class DeliveryMixin:
         raw_response: str,
         selected_topic: Optional[str] = None,
     ) -> str:
-        push_webhook_ids = _parse_int_list(task.push_webhook_ids)
-        webhooks = webhook_repo.get_by_ids(db, push_webhook_ids) if push_webhook_ids else []
+        webhooks = self._load_push_webhooks(db, task)
         meta: Dict[str, Any] = {
             "type": "topic_card",
             "text_layout": getattr(job, "topic_text_layout", "per_topic") or "per_topic",
@@ -584,8 +615,7 @@ class DeliveryMixin:
                 len(cards),
                 int(getattr(job, "topic_image_merge_threshold", 3) or 3),
             )
-            max_retry = max(int(getattr(job, "max_retry", 0) or 0), 0)
-            retry_interval = max(int(getattr(job, "retry_interval_sec", 0) or 0), 1)
+            max_retry, retry_interval = self._job_retry_params(job)
             try:
                 for webhook in webhooks:
                     delivery: Dict[str, Any] = {
@@ -657,18 +687,15 @@ class DeliveryMixin:
 
         if image_failures:
             error_message = self._build_topic_card_image_failure_message(image_failures)
-            execution.status = "failed"
-            execution.error_msg = error_message
-            alert_service.create_alert(
+            await self._report_delivery_failures(
                 db,
-                task_id=task.id,
-                job_id=job.id,
-                execution_id=execution.id,
+                task,
+                job,
+                execution,
                 category="topic_card_image",
                 message=error_message,
-                payload={"job_id": job.id, "failures": image_failures},
+                failures=image_failures,
             )
-            await self._notify_alert_webhooks(db, task, job, error_message)
 
         execution.raw_response = json.dumps(meta, ensure_ascii=False)
         return summary
