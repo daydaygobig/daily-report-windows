@@ -1,10 +1,6 @@
 """Shared rules for image-card text blocks."""
 
-import json
 import re
-import subprocess
-import sys
-import tempfile
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -12,7 +8,6 @@ from pathlib import Path
 from PIL import Image, ImageStat
 
 from ..config import get_settings
-from ..integrations.image_generation import ImageGenerationError
 
 settings = get_settings()
 
@@ -69,128 +64,6 @@ IMAGE_SIZE_MAP = {
         "1:3": "1440x4320",
     },
 }
-
-
-def card_renderer_directory() -> Path:
-    """本地案例卡渲染器（card_renderer）目录；可用设置覆盖。"""
-
-    configured = (getattr(settings, "card_renderer_dir", "") or "").strip()
-    if configured:
-        return Path(configured)
-    return Path(__file__).resolve().parents[3] / "card_renderer"
-
-
-def resolve_local_card_pairs(blocks: list[str]) -> list[tuple[int, int]]:
-    """本地渲染的配对唯一入口（返回 1 起始的 (上卡序号, 下卡序号)，严格成对）。
-
-    带拼卡标记时按标记配对（错序/漏块/重复块在此报出具体块序号）；
-    无标记的历史内容按位置相邻两两配对，奇数块无法配对直接报错。
-    AI 生图链路的宽松配对（允许奇数尾块单独成组）仍走 resolve_card_pairs，
-    两者语义不同，不要混用。
-    """
-
-    if not blocks:
-        raise ValueError("没有可渲染的内容块")
-    if has_card_markers(blocks):
-        return pair_card_blocks(blocks)
-    if len(blocks) % 2 != 0:
-        raise ValueError(
-            f"本地渲染要求内容块成对（上卡+下卡），实际 {len(blocks)} 个；请检查内容块标记是否完整"
-        )
-    return [(start, start + 1) for start in range(1, len(blocks) + 1, 2)]
-
-
-def render_case_cards_locally(
-    block_pairs: list[tuple[str, str]],
-    *,
-    font_theme: str = "A",
-    qr_url: str | None = None,
-) -> dict:
-    """调用本地 Playwright 渲染器把上下卡内容块渲染成 1:6 长图（已内嵌二维码）。
-
-    block_pairs 为 (上卡块原文, 下卡块原文) 序列——配对必须由调用方先经
-    resolve_local_card_pairs 完成（pair_card_blocks 是配对唯一真源），本函数
-    与渲染脚本都不再做拆块/配对，块首拼卡标记可省略。
-    返回 {"cards": [长图 bytes...], "halves": [(上卡 bytes, 下卡 bytes)...],
-    "warnings": [渲染器 stdout 中的告警行...]}，均按卡序排列；
-    halves 用于执行后落盘备份，便于事后排查拼接问题。
-    """
-
-    renderer_dir = card_renderer_directory()
-    script = renderer_dir / "render_card.py"
-    if not script.exists():
-        raise ImageGenerationError(f"本地案例卡渲染脚本不存在：{script}")
-    payload = {"cards": [{"top": top, "bottom": bottom} for top, bottom in block_pairs]}
-    with tempfile.TemporaryDirectory(prefix="case-card-local-") as tmp:
-        tmp_dir = Path(tmp)
-        input_path = tmp_dir / "cards.json"
-        input_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        output_dir = tmp_dir / "out"
-        cmd = [
-            sys.executable,
-            str(script),
-            str(input_path),
-            "--input-json",
-            "--font",
-            font_theme,
-            "--outdir",
-            str(output_dir),
-        ]
-        if qr_url:
-            cmd += ["--qr", qr_url]
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=600,
-            cwd=str(renderer_dir),
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip()[-500:]
-            raise ImageGenerationError(f"本地案例卡渲染失败：{detail}")
-        cards = sorted(
-            output_dir.glob("card_*.png"),
-            key=lambda p: int(re.search(r"card_(\d+)\.png", p.name).group(1)),
-        )
-        if not cards:
-            raise ImageGenerationError(f"本地案例卡渲染未产出图片：{(result.stdout or '').strip()[-300:]}")
-        half_dir = output_dir / "half"
-        halves = []
-        for index in range(1, len(cards) + 1):
-            top = half_dir / f"card{index}_top.png"
-            bottom = half_dir / f"card{index}_bottom.png"
-            halves.append(
-                (
-                    top.read_bytes() if top.exists() else b"",
-                    bottom.read_bytes() if bottom.exists() else b"",
-                )
-            )
-        return {
-            "cards": [p.read_bytes() for p in cards],
-            "halves": halves,
-            "warnings": _collect_renderer_warnings(result.stdout),
-        }
-
-
-def _collect_renderer_warnings(stdout: str | None) -> list[str]:
-    """提取渲染脚本 stdout 中的校验/溢出告警行。
-
-    渲染成功（returncode=0）时 stdout 会被调用方丢弃，内容溢出（整卡缩放）
-    与字段校验问题在生产环境将完全不可见，因此这里显式收集回传给调用方。
-    """
-
-    warnings: list[str] = []
-    for line in (stdout or "").splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("[warn]"):
-            warnings.append(stripped)
-        elif stripped.startswith("[card ") and ("校验" in stripped or "溢出" in stripped):
-            warnings.append(stripped)
-    return warnings
 
 
 def normalize_split_prompt(enabled: bool, prompt: str | None) -> str | None:

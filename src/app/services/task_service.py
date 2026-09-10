@@ -341,28 +341,16 @@ def _apply_image_card_job_settings(
                 "image_prompt": None,
                 "image_split_enabled": False,
                 "image_split_prompt": None,
-                "card_renderer": "ai",
-                "card_font_theme": "A",
             }
         )
         return obj_in
-
-    # 出图方式归一化：ai=AI 直出（需图片提示词模板）；local=本地渲染器（模板可选）
-    renderer = str(obj_in.get("card_renderer") or "").strip().lower()
-    if renderer not in {"ai", "local"}:
-        renderer = str(getattr(existing_job, "card_renderer", "") or "ai").strip().lower()
-        renderer = renderer if renderer in {"ai", "local"} else "ai"
-    theme = str(obj_in.get("card_font_theme") or "").strip().upper()
-    if theme not in {"A", "B", "C"}:
-        theme = str(getattr(existing_job, "card_font_theme", "") or "A").strip().upper()
-        theme = theme if theme in {"A", "B", "C"} else "A"
 
     template_id = obj_in.get("image_prompt_template_id")
     if not template_id and existing_job is not None:
         template_id = getattr(existing_job, "image_prompt_template_id", None)
         if not template_id and (getattr(existing_job, "image_prompt", None) or "").strip():
             return obj_in
-    if renderer != "local" and not template_id:
+    if not template_id:
         raise ValueError("图片卡片作业需要选择图片提示词模板")
     template = None
     if template_id:
@@ -382,22 +370,6 @@ def _apply_image_card_job_settings(
     if "image_split_prompt" not in obj_in and existing_job is not None:
         split_prompt = getattr(existing_job, "image_split_prompt", None)
 
-    if renderer == "local":
-        obj_in.update(
-            {
-                "image_prompt_template_id": int(template_id) if template_id else None,
-                "image_prompt": template.content if template else None,
-                "image_split_enabled": split_enabled,
-                "image_split_prompt": image_card_service.normalize_split_prompt(
-                    split_enabled,
-                    split_prompt,
-                ),
-                "card_renderer": "local",
-                "card_font_theme": theme,
-            }
-        )
-        return obj_in
-
     obj_in.update(
         {
             "image_prompt_template_id": int(template_id),
@@ -407,8 +379,6 @@ def _apply_image_card_job_settings(
                 split_enabled,
                 split_prompt,
             ),
-            "card_renderer": "ai",
-            "card_font_theme": theme,
         }
     )
     return obj_in

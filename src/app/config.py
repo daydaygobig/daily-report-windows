@@ -48,7 +48,6 @@ class Settings(BaseSettings):
     qr_code_url: str = "https://md.xinjianhub.cn/"
     qr_code_caption: str = "喜欢您来"
     qr_code_size_ratio: float = 0.12
-    card_renderer_dir: str = ""  # 本地案例卡渲染器目录；空 = 仓库根目录/card_renderer
 
     # Image card local backup (半卡图/拼接图/内容块原文落盘，便于排查拼接错位)
     image_card_backup_enabled: bool = True
