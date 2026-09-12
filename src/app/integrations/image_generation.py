@@ -26,6 +26,22 @@ class ImageGenerationError(Exception):
     """Raised when an image provider request cannot return image bytes."""
 
 
+def is_connect_failure(exc: BaseException | None) -> bool:
+    """判断异常链上是否存在 TCP 连接类失败（本机网络/系统代理瞬断的典型签名）。
+
+    generate_image 把 httpx 异常包装成 ImageGenerationError 并保留 __cause__，
+    这里沿因果链向下找 httpx.ConnectError / ConnectTimeout，供上层做退避重试。
+    """
+
+    depth = 0
+    while exc is not None and depth < 8:
+        if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+            return True
+        exc = exc.__cause__
+        depth += 1
+    return False
+
+
 @dataclass(frozen=True)
 class GeneratedImage:
     content: bytes
@@ -115,6 +131,12 @@ async def generate_image(
     })
     if quality:
         payload["quality"] = quality
+    # gpt-image 系支持 background 参数：强制不透明，避免模型输出透明底 PNG
+    # （模板要求整卡铺满主背景色，透明底即版式违规）。其他模型不认识该参数
+    # 会直接报错，因此只在 gpt-image 系上发送，且不覆盖额外 payload 里显式
+    # 配置的 background
+    if "gpt-image" in str(model.provider or "").lower() and "background" not in payload:
+        payload["background"] = "opaque"
 
     auth_header = str(extra_config.get("auth_header") or "Authorization")
     headers = {"Content-Type": "application/json"}

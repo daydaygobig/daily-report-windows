@@ -364,7 +364,8 @@ class DeliveryMixin:
             used_model: Optional[Model] = None
             image_attempt_meta: List[Dict[str, Any]] = []
             last_error: Optional[Exception] = None
-            for entry in image_sequence:
+            connect_failures = 0
+            for entry_index, entry in enumerate(image_sequence):
                 for attempt in range(1, entry.max_attempts + 1):
                     try:
                         generated = await image_generation.generate_image(
@@ -384,15 +385,25 @@ class DeliveryMixin:
                         break
                     except Exception as exc:
                         last_error = exc
-                        image_attempt_meta.append(
-                            {
-                                "model_id": entry.model.id,
-                                "model_name": entry.model.provider,
-                                "attempt": attempt,
-                                "status": "failed",
-                                "error": _format_exception_message("图片生成", exc),
-                            }
+                        attempt_record = {
+                            "model_id": entry.model.id,
+                            "model_name": entry.model.provider,
+                            "attempt": attempt,
+                            "status": "failed",
+                            "error": _format_exception_message("图片生成", exc),
+                        }
+                        # 连接类失败（本机网络/系统代理瞬断）时各接口走同一条本地
+                        # 链路，背靠背重试会一起失败——递增退避后再试，给链路恢复
+                        # 留出窗口；其余错误维持原有立即重试
+                        later_attempts = (entry.max_attempts - attempt) + sum(
+                            later.max_attempts for later in image_sequence[entry_index + 1 :]
                         )
+                        if later_attempts > 0 and image_generation.is_connect_failure(exc):
+                            connect_failures += 1
+                            backoff_sec = min(30 * connect_failures, 120)
+                            attempt_record["backoff_sec"] = backoff_sec
+                            await asyncio.sleep(backoff_sec)
+                        image_attempt_meta.append(attempt_record)
                         generated = None
                 if generated is not None:
                     break
@@ -413,6 +424,22 @@ class DeliveryMixin:
                     "error": error_message,
                     "model_attempts": image_attempt_meta,
                 }
+                # 已生成的半卡先落盘再抛错，失败执行也能事后取图补拼，不白跑
+                if generated_items:
+                    try:
+                        partial_backup = image_card_service.backup_execution_images(
+                            getattr(execution, "id", None),
+                            halves=[item["image"].content for item in generated_items],
+                            source_text=raw_response,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "失败执行的部分半卡落盘失败：{}",
+                            _format_exception_message("图片备份", exc),
+                        )
+                        partial_backup = {}
+                    if partial_backup:
+                        meta["partial_backup"] = partial_backup
                 execution.raw_response = json.dumps(meta, ensure_ascii=False)
                 raise RuntimeError(f"第 {index} 张图片生成失败：{error_message}") from last_error
             generated_items.append(

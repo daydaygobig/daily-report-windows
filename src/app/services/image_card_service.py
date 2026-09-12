@@ -114,20 +114,39 @@ def resolve_image_size(aspect_ratio: str | None, resolution: str | None) -> str:
     return sizes[ratio]
 
 
+# 生图模板「主背景色」#F8F3E3：仅在生图偶发输出透明底 PNG 时作为压平兜底色，
+# 换用其他底色的模板时须同步改这里
+CARD_BACKGROUND_RGB = (248, 243, 227)
+
+
+def _flatten_card_frame(im: Image.Image) -> Image.Image:
+    """把半卡压平到不透明主背景色上再转 RGB。
+
+    透明底 PNG 直接 convert("RGB") 只会丢弃 alpha 通道、露出透明像素
+    底下存储的纯黑 RGB，拼出的长图就变成黑底；必须先按 alpha 合成到
+    主背景色上再丢弃通道。
+    """
+    rgba = im.convert("RGBA")
+    if rgba.getchannel("A").getextrema()[0] < 255:
+        background = Image.new("RGBA", rgba.size, CARD_BACKGROUND_RGB + (255,))
+        rgba = Image.alpha_composite(background, rgba)
+    return rgba.convert("RGB")
+
+
 def stitch_images_vertically(images: list[bytes]) -> bytes:
     """把多张图片按顺序上下拼接成一张长图（像素级对齐，无接缝）。
 
     以最窄一张的宽度为基准，其余等比缩放到同一宽度后依次堆叠；
     用于 1:3 上下拼卡模式：相邻两张（同一话题的上卡+下卡）合成 1:6 长图。
-    拼接前会裁掉相邻边缘的纯色空白行（上卡裁底、下卡裁顶），只保留
-    24px 缓冲，避免生图模型在接缝一侧堆积大片留白。
+    拼接前会先压平透明底，再裁掉相邻边缘的纯色空白行（上卡裁底、下卡
+    裁顶），只保留 24px 缓冲，避免生图模型在接缝一侧堆积大片留白。
     """
     if not images:
         raise ValueError("没有可拼接的图片")
     frames = []
     for raw in images:
         with Image.open(BytesIO(raw)) as im:
-            frames.append(im.convert("RGB"))
+            frames.append(_flatten_card_frame(im))
     trimmed: list[Image.Image] = []
     count = len(frames)
     for index, im in enumerate(frames):
@@ -141,7 +160,7 @@ def stitch_images_vertically(images: list[bytes]) -> bytes:
             im = im.resize((width, max(1, round(im.height * width / im.width))), Image.LANCZOS)
         resized.append(im)
     total_height = sum(im.height for im in resized)
-    canvas = Image.new("RGB", (width, total_height), (255, 255, 255))
+    canvas = Image.new("RGB", (width, total_height), CARD_BACKGROUND_RGB)
     offset = 0
     for im in resized:
         canvas.paste(im, (0, offset))
