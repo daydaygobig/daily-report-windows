@@ -10,7 +10,7 @@ from .base import ORMBase
 
 TopicTextLayout = Literal["per_topic", "merged", "auto"]
 TopicImageLayout = Literal["single", "collection", "auto"]
-ImageAspectRatio = Literal["auto", "1:1", "3:2", "2:3", "9:16", "1:3"]
+ImageAspectRatio = Literal["auto", "1:1", "3:2", "2:3", "9:16"]
 ImageResolution = Literal["auto", "1k", "2k", "4k"]
 
 

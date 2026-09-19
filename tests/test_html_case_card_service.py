@@ -4,8 +4,8 @@ from app.services import html_case_card_service as svc
 
 
 def _sample_blocks() -> list[str]:
-    top = """【拼卡·上】
-IP角色：女
+    """单卡格式：一个内容块 = 一张完整卡（含全部七个槽位）。"""
+    full = """IP角色：女
 连60万赔偿都不要，这辞职是逃命还是犯病？
 存款260万垫底，为什么还是撑不住？
 关键词：超额责任心、裸辞、2N赔偿
@@ -23,8 +23,8 @@ IP角色：女
 人物关系：
 超额责任心 ——(隐形压制)→ 当事人：请假恐惧，摆烂有负罪感
 当事人 ——(主动弃权)→ 60万赔偿：连被裁拿2N的力气都不想花
-整体结构：这不是钱的问题，是结构问题"""
-    bottom = """【拼卡·下】
+整体结构：这不是钱的问题，是结构问题
+
 分析过程：
 1、「先逃命再说」：先把人捞出来，这是多数人的第一反应
 2、「这么想就输了」：状态越差，越不该做重大决定
@@ -36,13 +36,15 @@ IP角色：女
 金句：
 天不会塌，收起你该死的超额责任心。
 —— @李四"""
-    return [
-        f"<!-- CONTENT_BLOCK_START -->\n{top}\n<!-- CONTENT_BLOCK_END -->",
-        f"<!-- CONTENT_BLOCK_START -->\n{bottom}\n<!-- CONTENT_BLOCK_END -->",
-    ]
+    wrapped = "\n".join([
+        "<!-- CONTENT_BLOCK_START -->",
+        full,
+        "<!-- CONTENT_BLOCK_END -->",
+    ])
+    return [wrapped]
 
 
-def test_parse_case_blocks_merges_top_and_bottom():
+def test_parse_case_blocks_parses_single_complete_card():
     cards = svc.parse_case_blocks(_sample_blocks())
     assert len(cards) == 1
     card = cards[0]

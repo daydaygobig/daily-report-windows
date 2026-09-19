@@ -67,8 +67,7 @@ def _filter_cards_by_topic(cards: List[Dict[str, Any]], selected_topic: str) -> 
 def _filter_case_cards_by_topic(case_cards: List[Any], selected_topic: str) -> List[Any]:
     """按 1 起始序号或标题关键词（包含匹配，忽略大小写）筛选案例卡。
 
-    序号对应解析后的案例卡顺序（【拼卡·上/下】两块已合并为一张卡），
-    与内容块序号可能不一致。
+    序号对应解析后的案例卡顺序（单卡模式：一个内容块=一张卡）。
     """
     stripped = selected_topic.strip()
     if stripped.isdigit():
@@ -86,25 +85,8 @@ def _filter_case_cards_by_topic(case_cards: List[Any], selected_topic: str) -> L
 def _select_image_blocks(
     blocks: List[str], selected_topic: str, *, job: Job
 ) -> List[str]:
-    """按序号（1 起始的内容块序号）或关键词筛选内容块。
-
-    1:3 比例且块数大于 1 时相邻两块拼成一张长图，此时命中任何一块都会
-    返回该块所在的整组（两块），保证生成的是完整的一张长图。
-    内容块带【拼卡·上/下】标记时按标记配对成组（错序抛错），
-    避免把不同话题的两块并成一组。
-    """
+    """按序号（1 起始的内容块序号）或关键词筛选内容块（单卡模式：一块=一话题=一张卡）。"""
     stripped = selected_topic.strip()
-    stitch_pairs = (
-        getattr(job, "image_aspect_ratio", "auto") == "1:3" and len(blocks) > 1
-    )
-    if stitch_pairs and image_card_service.has_card_markers(blocks):
-        groups = [list(pair) for pair in image_card_service.pair_card_blocks(blocks)]
-    else:
-        groups: List[List[int]] = (
-            [list(range(start, min(start + 2, len(blocks) + 1))) for start in range(1, len(blocks) + 1, 2)]
-            if stitch_pairs
-            else [[index] for index in range(1, len(blocks) + 1)]
-        )
     if stripped.isdigit():
         index = int(stripped)
         if not 1 <= index <= len(blocks):
@@ -119,11 +101,7 @@ def _select_image_blocks(
         }
         if not matched_blocks:
             return []
-    selected_indexes: set = set()
-    for group in groups:
-        if matched_blocks & set(group):
-            selected_indexes.update(group)
-    return [block for index, block in enumerate(blocks, start=1) if index in selected_indexes]
+    return [block for index, block in enumerate(blocks, start=1) if index in matched_blocks]
 
 
 def _parse_int_list(raw: Optional[str]) -> List[int]:

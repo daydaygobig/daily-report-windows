@@ -132,7 +132,5 @@ def test_default_templates_do_not_rename_or_overwrite_existing_rows(tmp_path):
         "职场案例手绘长图（默认）",
         "日报话题案例卡（纯日报内容）",
         "日报话题案例卡JSON（纯日报内容）",
-        "日报话题案例卡·上下拼卡（纯日报内容）",
-        "职场案例手绘拼卡（默认）",
         "HTML案例卡·关系图生图提示词（默认）",
     ]

@@ -119,8 +119,7 @@ function ImageCardSection({
                 { label: "方图 1:1", value: "1:1" },
                 { label: "横版 3:2", value: "3:2" },
                 { label: "竖版 2:3", value: "2:3" },
-                { label: "竖屏 9:16", value: "9:16" },
-                { label: "竖版 1:3（上下拼卡单卡，自动拼为 1:6 长图）", value: "1:3" }
+                { label: "竖屏 9:16", value: "9:16" }
               ]}
             />
           </Form.Item>

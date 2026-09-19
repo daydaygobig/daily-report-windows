@@ -61,7 +61,7 @@ export type JobFormValues = {
   image_prompt_template_id?: number;
   image_split_enabled: boolean;
   image_split_prompt?: string | null;
-  image_aspect_ratio: "auto" | "1:1" | "3:2" | "2:3" | "9:16" | "1:3";
+  image_aspect_ratio: "auto" | "1:1" | "3:2" | "2:3" | "9:16";
   image_resolution: "auto" | "1k" | "2k" | "4k";
   max_image_count: number;
   ima_sync_enabled: boolean;

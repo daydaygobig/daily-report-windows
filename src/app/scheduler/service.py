@@ -285,6 +285,14 @@ class SchedulerService(
                                         job.id,
                                         upstream_meta.get("reason"),
                                     )
+                        # 单话题运行：在文案提示词末尾注入选题指令，模型只写所选话题的一张卡
+                        # （省去先输出全部话题再过滤的 token；下游 _select_*_by_topic 仍作兜底过滤）
+                        topic_instruction = (
+                            "\n\n## 本次运行要求（最高优先级）\n"
+                            f"本次为单话题运行：只处理话题「{selected_topic}」，"
+                            "只输出该话题对应的一张卡片内容（单个内容块），"
+                            "禁止输出其他任何话题的内容块或文字。\n"
+                        ) if selected_topic else ""
                         ai_result = await self._generate_summary_with_model_sequence(
                             db=db,
                             task=task,
@@ -296,7 +304,7 @@ class SchedulerService(
                             message_stats_result=message_stats_result,
                             html_required=html_required,
                             max_ai_requests=attempts,
-                            extra_prompt=upstream_suffix,
+                            extra_prompt=(upstream_suffix or "") + topic_instruction,
                         )
                         summary = ai_result.summary
                         prompt_tokens = ai_result.prompt_tokens

@@ -1,6 +1,6 @@
 """本地 HTML 案例卡引擎：把 image_card 任务的 CONTENT_BLOCK 文案渲染成零错别字长图。
 
-链路：V5 文案块（【拼卡·上】/【拼卡·下】） -> 解析成结构化数据 -> 注入 HTML 模板
+链路：单卡文案块（一个内容块=一张完整卡） -> 解析成结构化数据 -> 注入 HTML 模板
 -> Edge 无头截图 -> PNG。文字由浏览器字体引擎渲染，从机制上消除生图模型的错别字。
 
 设计要点：
@@ -178,25 +178,11 @@ def _is_header(line: str) -> Optional[str]:
 
 
 def parse_case_blocks(blocks: list[str]) -> list[CaseCard]:
-    """把 CONTENT_BLOCK 列表解析成案例卡。带【拼卡·上/下】标记的两块合成一张卡。"""
-    cards: list[CaseCard] = []
-    pending_top: Optional[dict[str, Any]] = None
-    for block in blocks:
-        text = strip_block_markers(block)
-        kind = block_card_kind_safe(block)
-        if kind == "top":
-            pending_top = {"text": text}
-            continue
-        if kind == "bottom":
-            bottom = text
-            top = pending_top["text"] if pending_top else ""
-            pending_top = None
-            cards.append(_parse_one_card(top, bottom))
-            continue
-        # 无拼卡标记：一块视作完整文案（尽力解析）
-        cards.append(_parse_one_card(text, ""))
-    if pending_top is not None:
-        cards.append(_parse_one_card(pending_top["text"], ""))
+    """把 CONTENT_BLOCK 列表解析成案例卡。单卡模式：一个内容块 = 一张完整卡。
+
+    历史数据里可能仍带【拼卡·上/下】标记，strip_block_markers 会剥掉后尽力解析。
+    """
+    cards = [ _parse_one_card(strip_block_markers(block), "") for block in blocks ]
     return [card for card in cards if _card_is_valid(card)]
 
 
@@ -204,15 +190,6 @@ def strip_block_markers(block: str) -> str:
     text = re.sub(r"<!--\s*CONTENT_BLOCK_(START|END)\s*-->", "", block or "")
     lines = [ln for ln in _lines(text) if ln not in ("【拼卡·上】", "【拼卡·下】")]
     return "\n".join(lines)
-
-
-def block_card_kind_safe(block: str) -> Optional[str]:
-    for line in _lines(block or ""):
-        if "【拼卡·上】" in line:
-            return "top"
-        if "【拼卡·下】" in line:
-            return "bottom"
-    return None
 
 
 def _card_is_valid(card: CaseCard) -> bool:
@@ -1681,7 +1658,6 @@ async def render_case_cards(
     *,
     execution_id: Optional[int] = None,
     task_name: str = "",
-    split_enabled: bool = False,
     relation_model: Any = None,
     relation_models: Optional[list[Any]] = None,
     relation_size: str = "1536x1024",
@@ -1693,7 +1669,6 @@ async def render_case_cards(
     全败单卡回退 SVG）；relation_model 为单模型兼容入口。
     relation_prompt_template 为选定的关系图生图提示词模板正文（空则用内置默认）。
     """
-    from . import image_card_service
     from ..integrations import image_generation
 
     settings = get_settings()
@@ -1707,7 +1682,7 @@ async def render_case_cards(
     suffix = f"-exec{execution_id}" if execution_id else ""
     run_dir = root / f"{stamp}-{slug}{suffix}"
 
-    pairs = image_card_service.resolve_card_pairs(blocks, split_enabled=split_enabled)
+    pairs = [[index] for index in range(1, len(blocks) + 1)]   # 单卡模式：一块=一卡
     generated_items: list[dict[str, Any]] = []
     final_images: list[dict[str, Any]] = []
     cards_meta: list[dict[str, Any]] = []

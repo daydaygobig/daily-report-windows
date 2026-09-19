@@ -288,7 +288,6 @@ class DeliveryMixin:
             max_count=max_count,
         )
         block_total = len(blocks)
-        blocks_kinds = [image_card_service.block_card_kind(block) for block in blocks]
         blocks_preview = [
             {"index": index, "text": block[:60]} for index, block in enumerate(blocks, start=1)
         ]
@@ -370,7 +369,6 @@ class DeliveryMixin:
             "type": "image_card",
             "block_count": len(blocks),
             "block_total": block_total,
-            "blocks_kinds": blocks_kinds,
             "blocks_preview": blocks_preview,
             "selected_topic": selected_topic,
             "engine": "local_html" if use_local_html else "image_model",
@@ -404,14 +402,13 @@ class DeliveryMixin:
         generated_items: List[Dict[str, Any]] = []
         final_images: List[Dict[str, Any]] = []
 
-        # 本地 HTML 引擎：上/下卡配对渲染成一张完整长卡（二维码已排版进页脚）。
+        # 本地 HTML 引擎：每个内容块渲染成一张完整长卡（二维码已排版进页脚）。
         # 产物持久化在 settings.html_card_output_dir，可用 scripts/render_html_card.py 手动改后重渲染。
         if use_local_html:
             generated_items, final_images, engine_meta = await html_case_card_service.render_case_cards(
                 blocks=blocks,
                 execution_id=getattr(execution, "id", None),
                 task_name=getattr(task, "name", ""),
-                split_enabled=bool(getattr(job, "image_split_enabled", False)),
                 relation_models=relation_models,
                 relation_size=relation_size,
                 relation_prompt_template=relation_prompt_template,
@@ -486,12 +483,12 @@ class DeliveryMixin:
                         "error": error_message,
                         "model_attempts": image_attempt_meta,
                     }
-                    # 已生成的半卡先落盘再抛错，失败执行也能事后取图补拼，不白跑
+                    # 已生成的卡片先落盘再抛错，失败执行也能事后取图，不白跑
                     if generated_items:
                         try:
                             partial_backup = image_card_service.backup_execution_images(
                                 getattr(execution, "id", None),
-                                halves=[item["image"].content for item in generated_items],
+                                cards=[item["image"].content for item in generated_items],
                                 source_text=raw_response,
                             )
                         except Exception as exc:
@@ -513,54 +510,20 @@ class DeliveryMixin:
                     }
                 )
 
-            # 阶段二：拼卡。1:3 比例下，同一话题的上卡+下卡上下拼接成一张长图。
-            # 带拼卡标记的内容按标记配对（错序在 parse 阶段已拦截），无标记的历史内容
-            # 退回按生成顺序相邻两张配对。拼接由代码完成（像素级对齐），不依赖生图模型输出可拼接的图。
-            stitch_pairs = aspect_ratio == "1:3" and len(generated_items) > 1
-            final_images: List[Dict[str, Any]] = []
-            if stitch_pairs:
-                card_groups = image_card_service.resolve_card_pairs(
-                    blocks,
-                    split_enabled=bool(getattr(job, "image_split_enabled", False)),
-                )
-                if not image_card_service.has_card_markers(blocks):
-                    meta["stitch_warning"] = "内容块无【拼卡·上/下】标记，按相邻位置配对"
-                for group_indexes in card_groups:
-                    group = [generated_items[index - 1] for index in group_indexes]
-                    merged_content = await asyncio.to_thread(
-                        image_card_service.stitch_images_vertically,
-                        [item["image"].content for item in group],
-                    )
-                    final_images.append(
-                        {
-                            "parts": [item["block_index"] for item in group],
-                            "image": image_generation.GeneratedImage(content=merged_content),
-                            "models": [item["model"] for item in group],
-                            "attempts": [item["attempts"] for item in group],
-                        }
-                    )
-                meta["stitch"] = {
-                    "enabled": True,
-                    "mode": "vertical_pair",
-                    "pairs": [item["parts"] for item in final_images],
+            # 阶段二：组装。单卡模式：每个内容块（= 每个话题）就是一张独立成卡。
+            final_images: List[Dict[str, Any]] = [
+                {
+                    "parts": [item["block_index"]],
+                    "image": item["image"],
+                    "models": [item["model"]],
+                    "attempts": [item["attempts"]],
                 }
-            else:
-                if aspect_ratio == "1:3":
-                    meta["stitch"] = {"enabled": False, "reason": "内容块不足两张，按单卡输出"}
-                for item in generated_items:
-                    final_images.append(
-                        {
-                            "parts": [item["block_index"]],
-                            "image": item["image"],
-                            "models": [item["model"]],
-                            "attempts": [item["attempts"]],
-                        }
-                    )
+                for item in generated_items
+            ]
 
         try:
             backup_meta = image_card_service.backup_execution_images(
                 getattr(execution, "id", None),
-                halves=[item["image"].content for item in generated_items],
                 cards=[item["image"].content for item in final_images],
                 source_text=raw_response,
             )
