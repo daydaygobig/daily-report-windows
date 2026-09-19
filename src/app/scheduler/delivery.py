@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -15,9 +16,10 @@ from ..integrations.security import decrypt_value
 from ..models.execution import Execution
 from ..models.job import Job
 from ..models.model import Model
+from ..models.prompt_template import PromptTemplate
 from ..models.task import Task
 from ..services import alert_service
-from ..services import image_card_service, topic_card_service
+from ..services import html_case_card_service, image_card_service, topic_card_service
 from ..schemas.webhook import CARD_COLOR_OPTIONS
 from ..utils import qr_overlay
 
@@ -31,6 +33,7 @@ from .errors import (
 )
 from .parsing import (
     _filter_cards_by_topic,
+    _filter_case_cards_by_topic,
     _parse_int_list,
     _select_image_blocks,
 )
@@ -306,13 +309,47 @@ class DeliveryMixin:
                 raw_response=raw_response,
             )
             return
-        image_prompt = (getattr(job, "image_prompt", None) or "").strip()
-        if not image_prompt:
-            raise RuntimeError("图片卡片作业未配置图片提示词模板")
-        image_sequence = self._resolve_image_model_sequence(db, task)
-        head_model = image_sequence[0].model
-        image_model_id = int(getattr(head_model, "id", 0) or 0)
-        image_model = head_model
+        # 本地 HTML 引擎开启时不调用生图模型，文案直接排版成图（零错别字）
+        use_local_html = bool(getattr(settings, "html_card_engine_enabled", False))
+        image_model_id: Optional[int] = None
+        image_model: Optional[Model] = None
+        image_sequence: List[Any] = []
+        if not use_local_html:
+            image_prompt = (getattr(job, "image_prompt", None) or "").strip()
+            if not image_prompt:
+                raise RuntimeError("图片卡片作业未配置图片提示词模板")
+            image_sequence = self._resolve_image_model_sequence(db, task)
+            head_model = image_sequence[0].model
+            image_model_id = int(getattr(head_model, "id", 0) or 0)
+            image_model = head_model
+
+        # 关系图生图引擎（方案A）：HTML 出卡 + relation=image 时，人物关系图改由
+        # 任务绑定的图片模型链按序绘制（与主图同一套链式兜底）；未绑定/解析失败回退 SVG
+        relation_models: list[Model] = []
+        relation_engine = "svg"
+        relation_size = str(getattr(settings, "html_card_relation_image_size", "1536x1024")
+                            or "1536x1024")
+        relation_prompt_template = ""
+        relation_prompt_template_name: Optional[str] = None
+        if use_local_html and str(getattr(settings, "html_card_relation_engine", "svg")
+                                  or "svg").strip().lower() == "image":
+            relation_engine = "image"
+            try:
+                relation_models = [entry.model for entry in self._resolve_image_model_sequence(db, task)]
+            except Exception as exc:  # noqa: BLE001 未绑定图片模型等：回退 SVG，不阻断出卡
+                relation_engine = "svg"
+                logger.warning("关系图生图引擎已开启，但任务未绑定可用图片模型，本轮回退 SVG：{}", exc)
+            # 作业的「图片提示词模板」在 HTML 模式下即关系图生图提示词模板；
+            # 未选/被删时回退服务内置默认模板，不阻断出卡
+            template_id = getattr(job, "image_prompt_template_id", None)
+            if relation_engine == "image" and template_id:
+                template = db.query(PromptTemplate).filter(
+                    PromptTemplate.id == int(template_id)).first()
+                if template and (template.content or "").strip():
+                    relation_prompt_template = template.content
+                    relation_prompt_template_name = template.name
+                else:
+                    logger.warning("图片提示词模板不存在或内容为空（id={}），关系图改用内置默认提示词", template_id)
 
         webhooks = self._load_push_webhooks(db, task)
         if not webhooks:
@@ -336,8 +373,13 @@ class DeliveryMixin:
             "blocks_kinds": blocks_kinds,
             "blocks_preview": blocks_preview,
             "selected_topic": selected_topic,
+            "engine": "local_html" if use_local_html else "image_model",
+            "relation_engine": relation_engine,
+            "relation_image_model": (relation_models[0].name or relation_models[0].provider) if relation_models else None,
+            "relation_image_model_sequence": [(m.name or m.provider) for m in relation_models],
+            "relation_prompt_template": relation_prompt_template_name,
             "image_model_id": image_model_id,
-            "image_model_name": image_model.provider,
+            "image_model_name": image_model.provider if image_model else None,
             "image_model_sequence": [
                 {"model_id": entry.model.id, "model_name": entry.model.provider, "max_attempts": entry.max_attempts}
                 for entry in image_sequence
@@ -346,154 +388,174 @@ class DeliveryMixin:
             "aspect_ratio": aspect_ratio,
             "resolution": resolution,
             "size": image_size,
-            "request_params": {
-                "model": image_model.provider,
-                "n": 1,
-                "size": image_size,
-                "output_format": "png",
-            },
+            "request_params": (
+                {"engine": "local_html", "size": image_size}
+                if use_local_html
+                else {
+                    "model": image_model.provider,
+                    "n": 1,
+                    "size": image_size,
+                    "output_format": "png",
+                }
+            ),
             "deliveries": [],
         }
         failures: List[Dict[str, Any]] = []
-
-        # 阶段一：逐块生成图片（任一块彻底失败即抛错终止）
         generated_items: List[Dict[str, Any]] = []
-        for index, block in enumerate(blocks, start=1):
-            image_prompt_text = image_card_service.compose_image_prompt(image_prompt, block)
-            generated = None
-            used_model: Optional[Model] = None
-            image_attempt_meta: List[Dict[str, Any]] = []
-            last_error: Optional[Exception] = None
-            connect_failures = 0
-            for entry_index, entry in enumerate(image_sequence):
-                for attempt in range(1, entry.max_attempts + 1):
-                    try:
-                        generated = await image_generation.generate_image(
-                            entry.model,
-                            prompt=image_prompt_text,
-                            size=image_size,
-                        )
-                        used_model = entry.model
-                        image_attempt_meta.append(
-                            {
+        final_images: List[Dict[str, Any]] = []
+
+        # 本地 HTML 引擎：上/下卡配对渲染成一张完整长卡（二维码已排版进页脚）。
+        # 产物持久化在 settings.html_card_output_dir，可用 scripts/render_html_card.py 手动改后重渲染。
+        if use_local_html:
+            generated_items, final_images, engine_meta = await html_case_card_service.render_case_cards(
+                blocks=blocks,
+                execution_id=getattr(execution, "id", None),
+                task_name=getattr(task, "name", ""),
+                split_enabled=bool(getattr(job, "image_split_enabled", False)),
+                relation_models=relation_models,
+                relation_size=relation_size,
+                relation_prompt_template=relation_prompt_template,
+            )
+            meta.update(engine_meta)
+        else:
+            # 阶段一：逐块生成图片（任一块彻底失败即抛错终止）
+            generated_items: List[Dict[str, Any]] = []
+            for index, block in enumerate(blocks, start=1):
+                image_prompt_text = image_card_service.compose_image_prompt(image_prompt, block)
+                generated = None
+                used_model: Optional[Model] = None
+                image_attempt_meta: List[Dict[str, Any]] = []
+                last_error: Optional[Exception] = None
+                connect_failures = 0
+                for entry_index, entry in enumerate(image_sequence):
+                    for attempt in range(1, entry.max_attempts + 1):
+                        try:
+                            generated = await image_generation.generate_image(
+                                entry.model,
+                                prompt=image_prompt_text,
+                                size=image_size,
+                            )
+                            used_model = entry.model
+                            image_attempt_meta.append(
+                                {
+                                    "model_id": entry.model.id,
+                                    "model_name": entry.model.provider,
+                                    "attempt": attempt,
+                                    "status": "success",
+                                }
+                            )
+                            break
+                        except Exception as exc:
+                            last_error = exc
+                            attempt_record = {
                                 "model_id": entry.model.id,
                                 "model_name": entry.model.provider,
                                 "attempt": attempt,
-                                "status": "success",
+                                "status": "failed",
+                                "error": _format_exception_message("图片生成", exc),
                             }
-                        )
+                            # 连接类失败（本机网络/系统代理瞬断）时各接口走同一条本地
+                            # 链路，背靠背重试会一起失败——递增退避后再试，给链路恢复
+                            # 留出窗口；其余错误维持原有立即重试
+                            later_attempts = (entry.max_attempts - attempt) + sum(
+                                later.max_attempts for later in image_sequence[entry_index + 1 :]
+                            )
+                            if later_attempts > 0 and image_generation.is_connect_failure(exc):
+                                connect_failures += 1
+                                backoff_sec = min(30 * connect_failures, 120)
+                                attempt_record["backoff_sec"] = backoff_sec
+                                await asyncio.sleep(backoff_sec)
+                            image_attempt_meta.append(attempt_record)
+                            generated = None
+                    if generated is not None:
                         break
-                    except Exception as exc:
-                        last_error = exc
-                        attempt_record = {
-                            "model_id": entry.model.id,
-                            "model_name": entry.model.provider,
-                            "attempt": attempt,
+                if generated is None:
+                    error_message = _format_exception_message("图片生成", last_error) if last_error else "图片生成失败"
+                    meta["deliveries"].append(
+                        {
+                            "image_index": index,
                             "status": "failed",
-                            "error": _format_exception_message("图片生成", exc),
+                            "requested_size": image_size,
+                            "error": error_message,
+                            "model_attempts": image_attempt_meta,
+                            "webhooks": [],
                         }
-                        # 连接类失败（本机网络/系统代理瞬断）时各接口走同一条本地
-                        # 链路，背靠背重试会一起失败——递增退避后再试，给链路恢复
-                        # 留出窗口；其余错误维持原有立即重试
-                        later_attempts = (entry.max_attempts - attempt) + sum(
-                            later.max_attempts for later in image_sequence[entry_index + 1 :]
-                        )
-                        if later_attempts > 0 and image_generation.is_connect_failure(exc):
-                            connect_failures += 1
-                            backoff_sec = min(30 * connect_failures, 120)
-                            attempt_record["backoff_sec"] = backoff_sec
-                            await asyncio.sleep(backoff_sec)
-                        image_attempt_meta.append(attempt_record)
-                        generated = None
-                if generated is not None:
-                    break
-            if generated is None:
-                error_message = _format_exception_message("图片生成", last_error) if last_error else "图片生成失败"
-                meta["deliveries"].append(
-                    {
+                    )
+                    meta["generation_error"] = {
                         "image_index": index,
-                        "status": "failed",
-                        "requested_size": image_size,
                         "error": error_message,
                         "model_attempts": image_attempt_meta,
-                        "webhooks": [],
+                    }
+                    # 已生成的半卡先落盘再抛错，失败执行也能事后取图补拼，不白跑
+                    if generated_items:
+                        try:
+                            partial_backup = image_card_service.backup_execution_images(
+                                getattr(execution, "id", None),
+                                halves=[item["image"].content for item in generated_items],
+                                source_text=raw_response,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "失败执行的部分半卡落盘失败：{}",
+                                _format_exception_message("图片备份", exc),
+                            )
+                            partial_backup = {}
+                        if partial_backup:
+                            meta["partial_backup"] = partial_backup
+                    execution.raw_response = json.dumps(meta, ensure_ascii=False)
+                    raise RuntimeError(f"第 {index} 张图片生成失败：{error_message}") from last_error
+                generated_items.append(
+                    {
+                        "block_index": index,
+                        "image": generated,
+                        "model": used_model,
+                        "attempts": image_attempt_meta,
                     }
                 )
-                meta["generation_error"] = {
-                    "image_index": index,
-                    "error": error_message,
-                    "model_attempts": image_attempt_meta,
-                }
-                # 已生成的半卡先落盘再抛错，失败执行也能事后取图补拼，不白跑
-                if generated_items:
-                    try:
-                        partial_backup = image_card_service.backup_execution_images(
-                            getattr(execution, "id", None),
-                            halves=[item["image"].content for item in generated_items],
-                            source_text=raw_response,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "失败执行的部分半卡落盘失败：{}",
-                            _format_exception_message("图片备份", exc),
-                        )
-                        partial_backup = {}
-                    if partial_backup:
-                        meta["partial_backup"] = partial_backup
-                execution.raw_response = json.dumps(meta, ensure_ascii=False)
-                raise RuntimeError(f"第 {index} 张图片生成失败：{error_message}") from last_error
-            generated_items.append(
-                {
-                    "block_index": index,
-                    "image": generated,
-                    "model": used_model,
-                    "attempts": image_attempt_meta,
-                }
-            )
 
-        # 阶段二：拼卡。1:3 比例下，同一话题的上卡+下卡上下拼接成一张长图。
-        # 带拼卡标记的内容按标记配对（错序在 parse 阶段已拦截），无标记的历史内容
-        # 退回按生成顺序相邻两张配对。拼接由代码完成（像素级对齐），不依赖生图模型输出可拼接的图。
-        stitch_pairs = aspect_ratio == "1:3" and len(generated_items) > 1
-        final_images: List[Dict[str, Any]] = []
-        if stitch_pairs:
-            card_groups = image_card_service.resolve_card_pairs(
-                blocks,
-                split_enabled=bool(getattr(job, "image_split_enabled", False)),
-            )
-            if not image_card_service.has_card_markers(blocks):
-                meta["stitch_warning"] = "内容块无【拼卡·上/下】标记，按相邻位置配对"
-            for group_indexes in card_groups:
-                group = [generated_items[index - 1] for index in group_indexes]
-                merged_content = await asyncio.to_thread(
-                    image_card_service.stitch_images_vertically,
-                    [item["image"].content for item in group],
+            # 阶段二：拼卡。1:3 比例下，同一话题的上卡+下卡上下拼接成一张长图。
+            # 带拼卡标记的内容按标记配对（错序在 parse 阶段已拦截），无标记的历史内容
+            # 退回按生成顺序相邻两张配对。拼接由代码完成（像素级对齐），不依赖生图模型输出可拼接的图。
+            stitch_pairs = aspect_ratio == "1:3" and len(generated_items) > 1
+            final_images: List[Dict[str, Any]] = []
+            if stitch_pairs:
+                card_groups = image_card_service.resolve_card_pairs(
+                    blocks,
+                    split_enabled=bool(getattr(job, "image_split_enabled", False)),
                 )
-                final_images.append(
-                    {
-                        "parts": [item["block_index"] for item in group],
-                        "image": image_generation.GeneratedImage(content=merged_content),
-                        "models": [item["model"] for item in group],
-                        "attempts": [item["attempts"] for item in group],
-                    }
-                )
-            meta["stitch"] = {
-                "enabled": True,
-                "mode": "vertical_pair",
-                "pairs": [item["parts"] for item in final_images],
-            }
-        else:
-            if aspect_ratio == "1:3":
-                meta["stitch"] = {"enabled": False, "reason": "内容块不足两张，按单卡输出"}
-            for item in generated_items:
-                final_images.append(
-                    {
-                        "parts": [item["block_index"]],
-                        "image": item["image"],
-                        "models": [item["model"]],
-                        "attempts": [item["attempts"]],
-                    }
-                )
+                if not image_card_service.has_card_markers(blocks):
+                    meta["stitch_warning"] = "内容块无【拼卡·上/下】标记，按相邻位置配对"
+                for group_indexes in card_groups:
+                    group = [generated_items[index - 1] for index in group_indexes]
+                    merged_content = await asyncio.to_thread(
+                        image_card_service.stitch_images_vertically,
+                        [item["image"].content for item in group],
+                    )
+                    final_images.append(
+                        {
+                            "parts": [item["block_index"] for item in group],
+                            "image": image_generation.GeneratedImage(content=merged_content),
+                            "models": [item["model"] for item in group],
+                            "attempts": [item["attempts"] for item in group],
+                        }
+                    )
+                meta["stitch"] = {
+                    "enabled": True,
+                    "mode": "vertical_pair",
+                    "pairs": [item["parts"] for item in final_images],
+                }
+            else:
+                if aspect_ratio == "1:3":
+                    meta["stitch"] = {"enabled": False, "reason": "内容块不足两张，按单卡输出"}
+                for item in generated_items:
+                    final_images.append(
+                        {
+                            "parts": [item["block_index"]],
+                            "image": item["image"],
+                            "models": [item["model"]],
+                            "attempts": [item["attempts"]],
+                        }
+                    )
 
         try:
             backup_meta = image_card_service.backup_execution_images(
@@ -515,7 +577,8 @@ class DeliveryMixin:
         for position, item in enumerate(final_images, start=1):
             generated = item["image"]
             qr_overlay_applied = False
-            if settings.qr_code_enabled and settings.qr_code_url:
+            # 本地 HTML 引擎的二维码已排版进页脚，不再叠加
+            if settings.qr_code_enabled and settings.qr_code_url and not use_local_html:
                 try:
                     overlaid = await asyncio.to_thread(
                         qr_overlay.apply_qr_overlay,
@@ -636,39 +699,82 @@ class DeliveryMixin:
         }
         style_config = topic_card_service.normalize_topic_style_config(getattr(task, "topic_style_config", None))
         meta["style_config"] = style_config
-        try:
-            cards = topic_card_service.parse_topic_cards(raw_response, style_config=style_config)
-        except Exception as exc:
-            logger.exception("话题卡片 JSON 解析失败 task={} job={}", task.id, job.id)
-            meta["parse_error"] = str(exc)
-            execution.raw_response = json.dumps(meta, ensure_ascii=False)
-            raise RuntimeError(f"话题卡片 JSON 解析失败：{exc}") from exc
+        cards: List[Dict[str, Any]] = []
+        case_cards: List[Any] = []
+        blocks: List[str] = []
+        # 内容块格式（V5/V6 案例卡提示词）→ 本地 HTML 引擎渲染；JSON 格式 → 原 satori 渲染器
+        use_case_blocks = image_card_service.BLOCK_START in (raw_response or "")
+        if use_case_blocks:
+            blocks = image_card_service.parse_content_blocks(raw_response, split_enabled=True, max_count=12)
+            case_cards = html_case_card_service.parse_case_blocks(blocks)
+            meta["format"] = "case_blocks"
+            meta["block_count"] = len(blocks)
+            meta["case_cards"] = [card.to_dict() for card in case_cards]
+            if selected_topic:
+                all_case_cards = case_cards
+                case_cards = _filter_case_cards_by_topic(all_case_cards, selected_topic)
+                meta["selected_topic"] = selected_topic
+                if not case_cards:
+                    titles = "; ".join(
+                        title
+                        for title in (str(card.title or "").strip() for card in all_case_cards)
+                        if title
+                    )
+                    raise RuntimeError(
+                        f"未找到匹配话题「{selected_topic}」，本次可用案例卡：{titles or '（无）'}"
+                    )
+            if not case_cards:
+                summary = image_card_service.NO_IMAGE_CONTENT_NOTICE
+                meta["skipped"] = "empty_cards"
+                execution.raw_response = json.dumps(meta, ensure_ascii=False)
+                if webhooks:
+                    await self._push_feishu(webhooks=webhooks, task=task, job=job, summary=summary)
+                return summary
+        else:
+            try:
+                cards = topic_card_service.parse_topic_cards(raw_response, style_config=style_config)
+            except Exception as exc:
+                logger.exception("话题卡片 JSON 解析失败 task={} job={}", task.id, job.id)
+                meta["parse_error"] = str(exc)
+                execution.raw_response = json.dumps(meta, ensure_ascii=False)
+                raise RuntimeError(f"话题卡片 JSON 解析失败：{exc}") from exc
 
-        meta["cards"] = cards
-        if selected_topic:
-            all_cards = cards
-            cards = _filter_cards_by_topic(all_cards, selected_topic)
-            meta["selected_topic"] = selected_topic
-            meta["selected_cards"] = cards
+            meta["cards"] = cards
+            if selected_topic:
+                all_cards = cards
+                cards = _filter_cards_by_topic(all_cards, selected_topic)
+                meta["selected_topic"] = selected_topic
+                meta["selected_cards"] = cards
+                if not cards:
+                    titles = [str(card.get("title") or "") for card in all_cards]
+                    raise RuntimeError(
+                        f"未找到匹配话题「{selected_topic}」，本次可用话题：{'; '.join(t for t in titles if t)}"
+                    )
             if not cards:
-                titles = [str(card.get("title") or "") for card in all_cards]
-                raise RuntimeError(
-                    f"未找到匹配话题「{selected_topic}」，本次可用话题：{'; '.join(t for t in titles if t)}"
-                )
-        if not cards:
-            summary = "本时段无职场话题讨论"
-            meta["skipped"] = "empty_cards"
-            execution.raw_response = json.dumps(meta, ensure_ascii=False)
-            if webhooks:
-                await self._push_feishu(webhooks=webhooks, task=task, job=job, summary=summary)
-            return summary
+                summary = "本时段无职场话题讨论"
+                meta["skipped"] = "empty_cards"
+                execution.raw_response = json.dumps(meta, ensure_ascii=False)
+                if webhooks:
+                    await self._push_feishu(webhooks=webhooks, task=task, job=job, summary=summary)
+                return summary
 
-        text_messages = topic_card_service.build_text_messages(
-            cards,
-            layout=getattr(job, "topic_text_layout", "per_topic") or "per_topic",
-            threshold=int(getattr(job, "topic_text_merge_threshold", 3) or 3),
-        )
-        summary = "\n\n---\n\n".join(text_messages)
+        if use_case_blocks:
+            # 内容块走 HTML 引擎出图：图片推送开启时不再重复推文本；未开图片则推纯文本兜底
+            image_enabled = bool(getattr(job, "topic_image_enabled", False))
+            text_messages = (
+                [] if image_enabled
+                else [html_case_card_service.strip_block_markers(block) for block in blocks]
+            )
+            summary = "\n\n---\n\n".join(
+                html_case_card_service.strip_block_markers(block) for block in blocks
+            )
+        else:
+            text_messages = topic_card_service.build_text_messages(
+                cards,
+                layout=getattr(job, "topic_text_layout", "per_topic") or "per_topic",
+                threshold=int(getattr(job, "topic_text_merge_threshold", 3) or 3),
+            )
+            summary = "\n\n---\n\n".join(text_messages)
 
         if webhooks and text_messages:
             if len(text_messages) == 1:
@@ -682,7 +788,7 @@ class DeliveryMixin:
         if bool(getattr(job, "topic_image_enabled", False)) and webhooks:
             image_layout = topic_card_service.resolve_image_layout(
                 getattr(job, "topic_image_layout", "single") or "single",
-                len(cards),
+                len(case_cards) if use_case_blocks else len(cards),
                 int(getattr(job, "topic_image_merge_threshold", 3) or 3),
             )
             max_retry, retry_interval = self._job_retry_params(job)
@@ -699,14 +805,36 @@ class DeliveryMixin:
                         if not app_id or not secret_cipher:
                             raise RuntimeError("Webhook 未配置飞书应用 App ID / App Secret，无法上传图片")
                         app_secret = decrypt_value(secret_cipher)
-                        engine = getattr(webhook, "image_render_engine", "satori") or "satori"
-                        cache_key = f"{engine}:{image_layout}"
-                        if cache_key not in rendered_by_engine:
-                            rendered_by_engine[cache_key] = await topic_card_service.render_images(
-                                cards,
-                                engine=engine,
-                                layout=image_layout,
-                            )
+                        if use_case_blocks:
+                            # 内容块格式：本地 HTML 引擎渲染为完整长卡（每话题一张）
+                            cache_key = "html:single"
+                            if cache_key not in rendered_by_engine:
+                                html_items, html_meta = await html_case_card_service.render_case_cards_as_files(
+                                    case_cards,
+                                    task_name=getattr(task, "name", ""),
+                                    execution_id=getattr(execution, "id", None),
+                                )
+                                meta.setdefault("html_card", html_meta)
+                                rendered_by_engine[cache_key] = [
+                                    topic_card_service.RenderedImage(
+                                        path=Path(item["path"]),
+                                        width=int(item["width"]),
+                                        height=int(item["height"]),
+                                        size_bytes=int(item["size_bytes"]),
+                                        engine="html",
+                                        layout="single",
+                                    )
+                                    for item in html_items
+                                ]
+                        else:
+                            engine = getattr(webhook, "image_render_engine", "satori") or "satori"
+                            cache_key = f"{engine}:{image_layout}"
+                            if cache_key not in rendered_by_engine:
+                                rendered_by_engine[cache_key] = await topic_card_service.render_images(
+                                    cards,
+                                    engine=engine,
+                                    layout=image_layout,
+                                )
                         image_items = []
                         for image in rendered_by_engine[cache_key]:
                             image_items.append(
@@ -741,7 +869,11 @@ class DeliveryMixin:
                     meta["deliveries"].append(delivery)
                 if rendered_by_engine:
                     try:
-                        backups = self._backup_topic_card_files(job=job, cards=cards, rendered=rendered_by_engine)
+                        backups = self._backup_topic_card_files(
+                            job=job,
+                            cards=[card.to_dict() for card in case_cards] if use_case_blocks else cards,
+                            rendered=rendered_by_engine,
+                        )
                         if backups:
                             meta["local_backups"] = backups
                             logger.info(
@@ -753,7 +885,10 @@ class DeliveryMixin:
                         logger.exception("话题卡片本地备份失败 job={}", job.id)
             finally:
                 for images in rendered_by_engine.values():
-                    topic_card_service.cleanup_images(images)
+                    # HTML 引擎产物是持久化文件（供人工修正后重渲染），不参与临时清理
+                    topic_card_service.cleanup_images(
+                        [image for image in images if image.engine != "html"]
+                    )
 
         if image_failures:
             error_message = self._build_topic_card_image_failure_message(image_failures)

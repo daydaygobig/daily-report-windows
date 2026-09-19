@@ -286,14 +286,18 @@ def _topic_card_meta(execution) -> Optional[Dict[str, Any]]:
         return None
 
     cards = data.get("cards") if isinstance(data.get("cards"), list) else []
+    case_cards = data.get("case_cards") if isinstance(data.get("case_cards"), list) else []
     deliveries = data.get("deliveries") if isinstance(data.get("deliveries"), list) else []
 
     return {
         "文字布局": _text_layout_label(data.get("text_layout")),
         "图片推送": "已开启" if data.get("image_enabled") else "未开启",
         "图片布局": _image_layout_label(data.get("image_layout")),
-        "话题数量": len(cards),
-        "话题列表": [_topic_card_item(card) for card in cards if isinstance(card, dict)],
+        "话题数量": len(cards) + len(case_cards),
+        "话题列表": (
+            [_topic_card_item(card) for card in cards if isinstance(card, dict)]
+            + [_case_card_item(card) for card in case_cards if isinstance(card, dict)]
+        ),
         "推送记录": [_topic_delivery_item(item) for item in deliveries if isinstance(item, dict)],
     }
 
@@ -400,6 +404,15 @@ def _topic_card_item(card: Dict[str, Any]) -> Dict[str, Any]:
         "主题色": _THEME_LABELS.get(str(card.get("theme") or ""), "靛蓝"),
         "短标签": [str(item) for item in card.get("tags", []) if isinstance(item, str)],
         "讨论时段": str(card.get("time_range") or "-"),
+    }
+
+
+def _case_card_item(card: Dict[str, Any]) -> Dict[str, Any]:
+    keywords = card.get("keywords") if isinstance(card.get("keywords"), list) else []
+    return {
+        "标题": str(card.get("title") or "-"),
+        "话题类型": "案例卡",
+        "短标签": [str(item) for item in keywords if item],
     }
 
 

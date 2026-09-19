@@ -54,6 +54,17 @@ class Settings(BaseSettings):
     image_card_backup_dir: str = "backups/image_cards"
     image_card_backup_keep_last: int = 30  # 只保留最近 N 次执行；<=0 表示全部保留
 
+    # 本地 HTML 案例卡引擎（替代生图模型：文案 -> HTML 排版 -> Edge 截图，零错别字）
+    html_card_engine_enabled: bool = False
+    html_card_output_dir: str = "backups/html_cards"    # 卡片 HTML/PNG/数据持久化目录（可手改后重渲染）
+    html_card_join_url: str = "https://md.xinjianhub.cn/#join-us"  # 页脚二维码指向
+    html_card_avatar_dir: str = "image"                            # 当事人头像素材（女F+编号/男M+编号，用户自行更新）
+    html_card_edge_path: str = ""                       # 留空自动探测 Edge/Chrome
+    html_card_render_scale: int = 2                     # 输出倍率（2 = 2160 宽高清）
+    html_card_arrow_style: str = "curve"                # 关系图箭头样式：curve=弧线箭头 / solid=实心大三角直线
+    html_card_relation_engine: str = "svg"              # 关系图引擎：svg=确定性渲染（默认）/ image=生图模型绘制
+    html_card_relation_image_size: str = "1536x1024"    # 关系图生图尺寸（image 引擎时生效）
+
     # Alerting
     default_alert_webhook_id: Optional[int] = None
     alert_suppression_minutes: int = 10

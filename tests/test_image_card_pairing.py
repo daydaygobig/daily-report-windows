@@ -199,6 +199,8 @@ async def test_ai_handler_pairs_by_markers_and_backs_up(monkeypatch, tmp_path):
     service = SchedulerService()
     monkeypatch.setattr(scheduler_common.settings, "qr_code_enabled", False)
     monkeypatch.setattr(scheduler_common.settings, "image_card_backup_dir", str(tmp_path / "bk"))
+    # 本测试走旧整卡生图路径：显式关闭本地 HTML 引擎，避免受 .env 环境影响
+    monkeypatch.setattr(scheduler_common.settings, "html_card_engine_enabled", False)
     blocks = [
         _block("top", "话题1上内容甲"),
         _block("bottom", "话题1下内容乙"),
@@ -296,6 +298,8 @@ async def test_ai_handler_rejects_misordered_blocks_before_generation(monkeypatc
     service = SchedulerService()
     monkeypatch.setattr(scheduler_common.settings, "qr_code_enabled", False)
     monkeypatch.setattr(scheduler_common.settings, "image_card_backup_dir", str(tmp_path / "bk"))
+    # 本测试走旧整卡生图路径：显式关闭本地 HTML 引擎，避免受 .env 环境影响
+    monkeypatch.setattr(scheduler_common.settings, "html_card_engine_enabled", False)
 
     async def fail_generate(*args, **kwargs):
         raise AssertionError("配对校验失败时不应发起生图请求")

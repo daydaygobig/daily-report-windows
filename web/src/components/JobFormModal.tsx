@@ -11,6 +11,7 @@ import type { Dayjs } from "dayjs";
 import type { Job, JobPayload, Task } from "../services/tasks";
 import type { PromptTemplate } from "../services/promptTemplates";
 import { DEFAULT_IMAGE_SPLIT_PROMPT, fetchPromptTemplates } from "../services/promptTemplates";
+import { fetchSystemStatus } from "../services/system";
 import type { GithubConfig, GithubConfigPayload } from "../services/githubConfigs";
 import { fetchGithubConfigs, createGithubConfig } from "../services/githubConfigs";
 import GithubConfigFormModal from "./GithubConfigFormModal";
@@ -70,6 +71,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
   const [configModalLoading, setConfigModalLoading] = useState(false);
   const [imagePromptTemplates, setImagePromptTemplates] = useState<PromptTemplate[]>([]);
   const [imagePromptTemplatesLoading, setImagePromptTemplatesLoading] = useState(false);
+  const [htmlEngineEnabled, setHtmlEngineEnabled] = useState(false);
 
   const ima = useImaResources(form);
   const {
@@ -122,6 +124,17 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
     }
   }, []);
 
+  // 本地 HTML 引擎开关决定图片卡片区块的字段形态（关系图模板 label / 隐藏比例分辨率）
+  const loadHtmlEngineStatus = useCallback(async () => {
+    try {
+      const status = await fetchSystemStatus();
+      setHtmlEngineEnabled(Boolean(status.html_card_engine_enabled));
+    } catch (error) {
+      console.error("failed to load system status", error);
+      setHtmlEngineEnabled(false);
+    }
+  }, []);
+
   const handleInlineConfigSubmit = useCallback(
     async (values: GithubConfigPayload) => {
       try {
@@ -166,6 +179,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
     void loadImaAccounts();
     if (isImageCardTask) {
       void loadImagePromptTemplates();
+      void loadHtmlEngineStatus();
     } else {
       setImagePromptTemplates([]);
     }
@@ -538,6 +552,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
           <ImageCardSection
             imagePromptTemplateOptions={imagePromptTemplateOptions}
             loading={imagePromptTemplatesLoading}
+            htmlEngineEnabled={htmlEngineEnabled}
           />
         ) : null;
       case "chatlog":
@@ -584,6 +599,7 @@ function JobFormModal({ open, initialValues, taskType, confirmLoading, onCancel,
         <ImageCardSection
           imagePromptTemplateOptions={imagePromptTemplateOptions}
           loading={imagePromptTemplatesLoading}
+          htmlEngineEnabled={htmlEngineEnabled}
         />
       ) : null}
       <ChatlogBackupSection />

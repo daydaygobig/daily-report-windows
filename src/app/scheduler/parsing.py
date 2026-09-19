@@ -64,6 +64,25 @@ def _filter_cards_by_topic(cards: List[Dict[str, Any]], selected_topic: str) -> 
     ]
 
 
+def _filter_case_cards_by_topic(case_cards: List[Any], selected_topic: str) -> List[Any]:
+    """按 1 起始序号或标题关键词（包含匹配，忽略大小写）筛选案例卡。
+
+    序号对应解析后的案例卡顺序（【拼卡·上/下】两块已合并为一张卡），
+    与内容块序号可能不一致。
+    """
+    stripped = selected_topic.strip()
+    if stripped.isdigit():
+        index = int(stripped)
+        if 1 <= index <= len(case_cards):
+            return [case_cards[index - 1]]
+    keyword = stripped.lower()
+    return [
+        card
+        for card in case_cards
+        if keyword in str(getattr(card, "title", "") or "").strip().lower()
+    ]
+
+
 def _select_image_blocks(
     blocks: List[str], selected_topic: str, *, job: Job
 ) -> List[str]:

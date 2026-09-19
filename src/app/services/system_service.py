@@ -38,6 +38,8 @@ async def get_system_status() -> dict:
         "chat_record_provider": chat_record_status.provider,
         "chat_record_status": chat_record_status.status,
         "chat_record_status_message": chat_record_status.message,
+        "html_card_engine_enabled": bool(settings.html_card_engine_enabled),
+        "html_card_relation_engine": settings.html_card_relation_engine or "svg",
         "next_execution": next_run.isoformat() if next_run else None,
         "executions_today": executions_today,
         "server_time": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),

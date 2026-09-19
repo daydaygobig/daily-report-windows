@@ -8,10 +8,12 @@ import type { PromptTemplate } from "../../../services/promptTemplates";
 
 function ImageCardSection({
   imagePromptTemplateOptions,
-  loading
+  loading,
+  htmlEngineEnabled = false
 }: {
   imagePromptTemplateOptions: { label: string; value: number }[];
   loading: boolean;
+  htmlEngineEnabled?: boolean;
 }) {
   const form = Form.useFormInstance();
   const imageSplitEnabled = Form.useWatch("image_split_enabled", form);
@@ -20,8 +22,12 @@ function ImageCardSection({
     <>
       <Form.Item
         name="image_prompt_template_id"
-        label="图片提示词模板"
-        tooltip="该模板只负责每张图片的视觉风格和排版要求，会与拆分后的每个 Markdown 内容块组合后发送给图片模型。"
+        label={htmlEngineEnabled ? "关系图生图提示词模板" : "图片提示词模板"}
+        tooltip={
+          htmlEngineEnabled
+            ? "本地 HTML 引擎已开启：整卡由 HTML 排版渲染，该模板用于人物关系图的生图提示词（画型/节点/连线占位符由系统按卡片数据自动填充）。"
+            : "该模板只负责每张图片的视觉风格和排版要求，会与拆分后的每个 Markdown 内容块组合后发送给图片模型。"
+        }
         rules={[{ required: true, message: "请选择图片提示词模板" }]}
       >
         <Select
@@ -95,38 +101,46 @@ function ImageCardSection({
           </Space>
         </>
       ) : null}
-      <Form.Item
-        name="image_aspect_ratio"
-        label="图片比例"
-        tooltip="自适应由图片接口决定；指定比例后，系统会结合分辨率换算为实际像素尺寸。"
-        rules={[{ required: true, message: "请选择图片比例" }]}
-      >
-        <Select
-          options={[
-            { label: "自适应", value: "auto" },
-            { label: "方图 1:1", value: "1:1" },
-            { label: "横版 3:2", value: "3:2" },
-            { label: "竖版 2:3", value: "2:3" },
-            { label: "竖屏 9:16", value: "9:16" },
-            { label: "竖版 1:3（上下拼卡单卡，自动拼为 1:6 长图）", value: "1:3" }
-          ]}
-        />
-      </Form.Item>
-      <Form.Item
-        name="image_resolution"
-        label="分辨率"
-        tooltip="分辨率越高，生成时间、接口费用和飞书上传体积通常越大；最终是否支持由图片模型供应商决定。"
-        rules={[{ required: true, message: "请选择分辨率" }]}
-      >
-        <Select
-          options={[
-            { label: "自适应", value: "auto" },
-            { label: "1K", value: "1k" },
-            { label: "2K", value: "2k" },
-            { label: "4K", value: "4k" }
-          ]}
-        />
-      </Form.Item>
+      {htmlEngineEnabled ? (
+        <Typography.Text type="secondary" style={{ display: "block", marginTop: -8, marginBottom: 16 }}>
+          本地 HTML 引擎已开启：整卡由 HTML 排版渲染，图片比例 / 分辨率不适用。
+        </Typography.Text>
+      ) : (
+        <>
+          <Form.Item
+            name="image_aspect_ratio"
+            label="图片比例"
+            tooltip="自适应由图片接口决定；指定比例后，系统会结合分辨率换算为实际像素尺寸。"
+            rules={[{ required: true, message: "请选择图片比例" }]}
+          >
+            <Select
+              options={[
+                { label: "自适应", value: "auto" },
+                { label: "方图 1:1", value: "1:1" },
+                { label: "横版 3:2", value: "3:2" },
+                { label: "竖版 2:3", value: "2:3" },
+                { label: "竖屏 9:16", value: "9:16" },
+                { label: "竖版 1:3（上下拼卡单卡，自动拼为 1:6 长图）", value: "1:3" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item
+            name="image_resolution"
+            label="分辨率"
+            tooltip="分辨率越高，生成时间、接口费用和飞书上传体积通常越大；最终是否支持由图片模型供应商决定。"
+            rules={[{ required: true, message: "请选择分辨率" }]}
+          >
+            <Select
+              options={[
+                { label: "自适应", value: "auto" },
+                { label: "1K", value: "1k" },
+                { label: "2K", value: "2k" },
+                { label: "4K", value: "4k" }
+              ]}
+            />
+          </Form.Item>
+        </>
+      )}
       <Form.Item
         name="max_image_count"
         label="单次最多生成图片"

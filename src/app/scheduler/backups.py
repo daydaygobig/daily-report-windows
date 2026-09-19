@@ -23,6 +23,7 @@ from ..utils import message_stats as message_stats_utils
 from .errors import (
     _format_exception_message,
 )
+from .html_to_markdown import html_to_markdown
 from .parsing import (
     _is_weekly_report,
     _parse_str_list,
@@ -449,6 +450,9 @@ class BackupMixin:
         text = (content or "").strip()
         if not text:
             return []
+        # HTML 日报输出转可读 Markdown 再落盘（本地备份与 IMA 知识库同步共用的文件）；
+        # HTML 原文仍保留在 HTML 备份 / GitHub 部署链路，非 HTML 内容原样通过
+        text = (html_to_markdown(text) or "").strip() or text
         formats = _parse_str_list(getattr(job, "model_output_formats", None)) or ["md"]
         directory = self._resolve_output_dir(getattr(job, "model_output_path", None), "model_outputs")
         template = getattr(job, "model_output_filename_template", None) or "模型输出_{YYYY-MM-DD}"

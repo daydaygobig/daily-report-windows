@@ -12,7 +12,7 @@ from ..models.job import Job
 from ..models.model import Model
 from ..models.task import Task
 from ..services import chat_record_service
-from ..services import image_card_service, topic_card_service
+from ..services import html_case_card_service, image_card_service, topic_card_service
 from ..utils import message_stats as message_stats_utils
 
 from .errors import (
@@ -184,6 +184,16 @@ class PromptFlowMixin:
 
     def _validate_ai_output(self, *, task: Task, job: Job, summary: str, html_required: bool) -> None:
         if getattr(task, "task_type", "report") == "topic_card":
+            if image_card_service.BLOCK_START in summary:
+                # 内容块格式（V5/V6 案例卡提示词）：话题卡片改走本地 HTML 引擎渲染，
+                # 此处只校验内容块结构与槽位可解析性，不要求 JSON
+                blocks = image_card_service.parse_content_blocks(summary, split_enabled=True, max_count=12)
+                case_cards = html_case_card_service.parse_case_blocks(blocks)
+                if not case_cards or not any(
+                    card.facts or card.relations or card.analysis for card in case_cards
+                ):
+                    raise ValueError("内容块格式无法解析出案例卡：缺少槽位内容（背景概述/人物关系/分析过程等）")
+                return
             style_config = topic_card_service.normalize_topic_style_config(getattr(task, "topic_style_config", None))
             topic_card_service.parse_topic_cards(summary, style_config=style_config)
             return

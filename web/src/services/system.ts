@@ -7,6 +7,8 @@ type SystemStatus = {
   chat_record_provider?: "chatlog" | "weflow";
   chat_record_status?: string;
   chat_record_status_message?: string;
+  html_card_engine_enabled?: boolean;
+  html_card_relation_engine?: string;
   next_execution: string | null;
   executions_today: number;
   tasks: number;
