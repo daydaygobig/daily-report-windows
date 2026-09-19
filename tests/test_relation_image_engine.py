@@ -28,6 +28,22 @@ def _sample_card() -> svc.CaseCard:
     })
 
 
+def test_compose_relation_prompt_avatar_gender_follows_card():
+    """主节点头像按卡片主人公性别标注（IP角色：男/女），未知时中性。"""
+    base = {"relations": [{"source": "主任", "verb": "隐形拿捏", "target": "当事人", "why": "把柄在手"}]}
+    female_card = svc.CaseCard.from_dict({**base, "gender": "女"})
+    prompt, _ = svc.compose_relation_prompt(female_card)
+    assert "女性职场人物" in prompt and "男性职场人物" not in prompt
+
+    male_card = svc.CaseCard.from_dict({**base, "gender": "男"})
+    prompt, _ = svc.compose_relation_prompt(male_card)
+    assert "男性职场人物" in prompt
+
+    unknown_card = svc.CaseCard.from_dict({**base, "gender": ""})
+    prompt, _ = svc.compose_relation_prompt(unknown_card)
+    assert "中性" in prompt
+
+
 def test_compose_relation_prompt_pins_white_bg_and_copies_texts():
     prompt, mode = svc.compose_relation_prompt(_sample_card())
     assert mode == "confront"                    # 两方故事自动对峙画型

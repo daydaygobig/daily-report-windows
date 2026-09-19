@@ -1448,9 +1448,14 @@ def compose_relation_prompt(card: CaseCard, template_text: str = "") -> tuple[st
     ghosts = {name for name in layout["nodes"] if _is_ghost(name)}
 
     node_lines = []
+    # 主节点头像按卡片主人公性别画（IP角色：男/女）；未知时退回中性
+    gender_text = (card.gender or "").strip()
+    avatar_gender = ("女性" if "女" in gender_text
+                     else "男性" if "男" in gender_text else "性别不明的中性")
     for name in layout["nodes"]:
         if name == center:
-            note = ("（主节点：画图中最大的圆形节点，内画一位中性职场人物的单色头像插画，"
+            note = (f"（主节点：画图中最大的圆形节点，内画一位{avatar_gender}职场人物的单色头像插画"
+                    "（发型、轮廓按该性别画，简笔画气质，不刻画五官表情），"
                     "圆外衬一圈同心虚线圆，节点正下方配小标签条写这个身份标签）")
         elif name in ghosts:
             note = "（无形角色/制度/概念：虚线描边的圆形节点，内画与含义呼应的单色细线图标）"
