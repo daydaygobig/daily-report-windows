@@ -269,6 +269,7 @@ class DeliveryMixin:
             "size_bytes": image.size_bytes,
             "engine": image.engine,
             "layout": image.layout,
+            "page_count": image.page_count or None,
         }
 
     async def _handle_image_card_result(
@@ -580,6 +581,7 @@ class DeliveryMixin:
                 "size_bytes": generated.size_bytes,
                 "mime_type": generated.mime_type,
                 "qr_code_overlay": qr_overlay_applied,
+                "page_count": item.get("page_count"),
                 "webhooks": [],
             }
             for webhook, app_id, app_secret in webhook_credentials:
@@ -786,6 +788,7 @@ class DeliveryMixin:
                                         size_bytes=int(item["size_bytes"]),
                                         engine="html",
                                         layout="single",
+                                        page_count=int(item.get("page_count") or 0),
                                     )
                                     for item in html_items
                                 ]

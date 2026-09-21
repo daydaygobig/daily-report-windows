@@ -52,6 +52,7 @@ class RenderedImage:
     size_bytes: int
     engine: str
     layout: str
+    page_count: int = 0   # 本地 HTML 引擎：小红书 3:4 分页数量（0=无分页）
 
 
 def parse_topic_cards(raw: str, *, style_config: Any = None) -> list[dict[str, Any]]:

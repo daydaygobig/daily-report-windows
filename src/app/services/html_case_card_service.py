@@ -10,6 +10,7 @@
   权力越大越靠上描边越粗、当事人高亮）、多方群像（默认：当事人居中 + 卫星环绕），
   自动布局不完美时可直接手改 card.html 后用 CLI 重渲染，生成器不会覆盖手改内容；
 - HTML / card_data.json / PNG 持久化到 settings.html_card_output_dir，便于人工修正与排查；
+- html_card_split_pages_enabled 开启时，整卡之外自动产出小红书 3:4 分页（pages/page_NN.*），失败不阻断整卡；
 - 二维码在页脚内直接排版生成（qrcode 库），无需事后叠加。
 """
 
@@ -127,6 +128,8 @@ class RenderedCard:
     width: int
     height: int
     relation_model: str = ""      # 关系图实际由哪个模型画出（空=SVG 渲染）
+    pages_dir: Optional[Path] = None   # 小红书 3:4 分页产物目录（未开启/失败为 None）
+    page_count: int = 0                # 分页数量（含封面）
 
 
 # ---------------------------------------------------------------------------
@@ -939,60 +942,30 @@ def _split_title(title: str) -> tuple[str, str]:
     return text[:mid], text[mid:]
 
 
-def build_card_html(card: CaseCard, *, avatar_file: str, qr_file: str,
-                    brand: str = _BRAND, footer_l1: str = _FOOTER_L1,
-                    footer_l2: str = _FOOTER_L2, cta: str = _CTA,
-                    arrow_style: Optional[str] = None,
-                    diagram_override: Optional[dict[str, Any]] = None) -> str:
-    person_brief = _person_brief(card.facts)
-    if arrow_style is None:
-        arrow_style = str(get_settings().html_card_arrow_style or "curve")
-    diagram = diagram_override or layout_diagram(
-        card.relations, person_sub=person_brief, arrow_style=arrow_style,
-        topology=card.topology)
+# ---------------------------------------------------------------------------
+# 三.5、共享样式与内容块构建器（整卡长图与 3:4 分页复用，保证两套产物视觉一致）
+# ---------------------------------------------------------------------------
 
-    title_l1, title_l2 = _split_title(card.title)
-    # 标签列宽按最长标签计算：既不换行，又保证各行黑色正文起始位置对齐
-    # （46px/字 > 42px 字号，留出余量；.fact .k 用 var(--k-w) 定宽消费该值）
-    label_width = max((_display_width(k) for k, _ in card.facts), default=3)
-    k_w = min(max(int(label_width * 46) + 20, 150), 380)
-    facts_html = "\n".join(
-        f'<div class="fact"><span class="k">{_esc(k)}</span><span class="v">{_esc(v)}</span></div>'
-        for k, v in card.facts)
-    scenes_html = "\n".join(f'<div class="scene">{_esc(s)}</div>' for s in card.scenes)
-    chips_html = '<span class="chip first">关键词</span>' + "".join(
-        f'<span class="chip">{_esc(k)}</span>' for k in card.keywords)
-    analysis_html = "\n".join(
-        f'<div class="item"><div class="badge">{i + 1:02d}</div><div class="body">'
-        f'<div class="tagline"><span class="tag">『{_esc(tag)}』</span></div>'
-        f'<div class="txt">{_esc(txt)}</div></div></div>'
-        for i, (tag, txt) in enumerate(card.analysis))
-    solutions_html = "\n".join(
-        f'<div class="item"><div class="num serif">{i + 1:02d}</div><div class="body">'
-        f'<div class="tagline"><span class="tag">『{_esc(tag)}』</span></div>'
-        f'<div class="txt">{_esc(txt)}</div></div></div>'
-        for i, (tag, txt) in enumerate(card.solutions))
-    quotes_html = "\n".join(
-        f'<div class="quote{" main" if i == 0 else ""}"><div class="q">{_esc(q)}</div>'
-        f'<div class="sig">—— {_esc(sig)}</div></div>'
-        for i, (q, sig) in enumerate(card.quotes))
+_DIAGRAM_FIXUP_JS = """  <!-- 渲染兜底：画布高度按节点实际渲染高度自适应，杜绝节点溢出画布压到下方模块 -->
+  <script>
+  (function () {
+    var canvases = document.querySelectorAll('.dg-canvas');
+    for (var i = 0; i < canvases.length; i++) {
+      var canvas = canvases[i];
+      var maxBottom = 0;
+      var nodes = canvas.querySelectorAll('.dg-node');
+      for (var j = 0; j < nodes.length; j++) {
+        maxBottom = Math.max(maxBottom, nodes[j].offsetTop + nodes[j].offsetHeight);
+      }
+      if (maxBottom + 30 > canvas.offsetHeight) { canvas.style.height = (maxBottom + 30) + 'px'; }
+    }
+  })();
+  </script>"""
 
-    diagram_html, canvas_h = _build_diagram_html(diagram, avatar_file)
-    relation_block = ""
-    if diagram_html:
-        summary = f'<div class="rel-sum">{_esc(card.relation_summary)}</div>' if card.relation_summary else ""
-        relation_block = (
-            '<div class="mod"><div class="mod-head"><span class="sq"></span>'
-            '<span class="zh">人物关系</span><span class="en">RELATION MAP</span><span class="line"></span></div>'
-            f'<div class="dg-panel">{diagram_html}</div>{summary}</div>'
-        )
-    question_block = f'<div class="question-band serif">{_esc(card.question)}</div>' if card.question else ""
 
-    return f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<style>
+def _card_css() -> str:
+    """整卡与分页共用的模块样式（内容宽 = 1080 - 48*2 = 984，两套产物完全一致）。"""
+    return f"""
   * {{ margin:0; padding:0; box-sizing:border-box; }}
   html,body {{ width:{CARD_WIDTH}px; background:#F7F3EC; }}
   body {{ font-family:"Microsoft YaHei","Noto Sans SC",sans-serif; color:#1A1A1A; padding:52px 48px 48px; }}
@@ -1089,29 +1062,175 @@ def build_card_html(card: CaseCard, *, avatar_file: str, qr_file: str,
   .qr-box {{ flex:none; width:346px; height:346px; border:4px solid #1A1A1A; background:#FFF; padding:12px;
     border-radius:24px; }}
   .qr-box img {{ width:100%; height:100%; object-fit:contain; display:block; }}
-</style>
-</head>
-<body>
-  <div class="masthead"><div class="brand">{_esc(brand)}</div></div>
-  <div class="rule-thick"></div>
-  <div class="rule-thin"></div>
-  <div class="title-wrap">
-    <div class="deco-quote serif">”</div>
-    <div class="title serif">{_esc(title_l1)}{f'<br><span class="l2">{_esc(title_l2)}</span>' if title_l2 else ''}</div>
-    <div class="subtitle">{_esc(card.subtitle)}</div>
-  </div>
-  <div class="chips">{chips_html}</div>
-  <div class="mod">
-    <div class="mod-head"><span class="sq"></span><span class="zh">背景概述</span><span class="en">BACKGROUND</span><span class="line"></span></div>
-    <div class="facts-avatar">
+"""
+
+
+def _masthead_html(brand: str) -> str:
+    return (f'  <div class="masthead"><div class="brand">{_esc(brand)}</div></div>\n'
+            f'  <div class="rule-thick"></div>\n'
+            f'  <div class="rule-thin"></div>')
+
+
+def _facts_avatar_html(card: CaseCard, avatar_file: str) -> str:
+    """背景概述的事实区（头像 + 事实清单），整卡与分页共用。"""
+    person_brief = _person_brief(card.facts)
+    label_width = max((_display_width(k) for k, _ in card.facts), default=3)
+    k_w = min(max(int(label_width * 46) + 20, 150), 380)
+    facts_html = "\n".join(
+        f'<div class="fact"><span class="k">{_esc(k)}</span><span class="v">{_esc(v)}</span></div>'
+        for k, v in card.facts)
+    avatar_img = (f'<img src="{_esc(avatar_file)}" alt="当事人头像">') if avatar_file else ""
+    return f"""    <div class="facts-avatar">
       <div class="avatar-box">
-        <img src="{_esc(avatar_file)}" alt="当事人头像">
+        {avatar_img}
         <div class="note">{_esc(person_brief)}</div>
       </div>
       <div class="facts" style="--k-w:{k_w}px">
 {facts_html}
       </div>
-    </div>
+    </div>"""
+
+
+def _scene_items_html(card: CaseCard) -> str:
+    return "\n".join(f'<div class="scene">{_esc(s)}</div>' for s in card.scenes)
+
+
+def _scenes_block_html(card: CaseCard) -> str:
+    return f"""    <div class="scenes">
+{_scene_items_html(card)}
+    </div>"""
+
+
+def _chips_html(card: CaseCard) -> str:
+    return '<span class="chip first">关键词</span>' + "".join(
+        f'<span class="chip">{_esc(k)}</span>' for k in card.keywords)
+
+
+def _question_html(question: str) -> str:
+    return f'<div class="question-band serif">{_esc(question)}</div>'
+
+
+def _rel_sum_html(summary: str) -> str:
+    return f'<div class="rel-sum">{_esc(summary)}</div>'
+
+
+def _analysis_item_html(index: int, tag: str, txt: str) -> str:
+    return (f'<div class="item"><div class="badge">{index + 1:02d}</div><div class="body">'
+            f'<div class="tagline"><span class="tag">『{_esc(tag)}』</span></div>'
+            f'<div class="txt">{_esc(txt)}</div></div></div>')
+
+
+def _solution_item_html(index: int, tag: str, txt: str) -> str:
+    return (f'<div class="item"><div class="num serif">{index + 1:02d}</div><div class="body">'
+            f'<div class="tagline"><span class="tag">『{_esc(tag)}』</span></div>'
+            f'<div class="txt">{_esc(txt)}</div></div></div>')
+
+
+def _analysis_list_html(card: CaseCard) -> str:
+    """分析过程整模块：全部条目同一页，条目间黑色分隔线（与整卡结构一致）。"""
+    items = "\n".join(
+        _analysis_item_html(i, tag, txt) for i, (tag, txt) in enumerate(card.analysis))
+    return f"""    <div class="ana-list">
+{items}
+    </div>"""
+
+
+def _solutions_panel_html(card: CaseCard) -> str:
+    """解决方案整模块：全部条目同页共用一个白底面板（与整卡结构一致）。"""
+    items = "\n".join(
+        _solution_item_html(i, tag, txt) for i, (tag, txt) in enumerate(card.solutions))
+    return f"""    <div class="sol-panel">
+      <div class="sol-list">
+{items}
+      </div>
+    </div>"""
+
+
+def _quote_html(quote: str, sig: str, *, main: bool = False) -> str:
+    cls = "quote main" if main else "quote"
+    return (f'<div class="{cls}"><div class="q">{_esc(quote)}</div>'
+            f'<div class="sig">—— {_esc(sig)}</div></div>')
+
+
+def _footer_row_html(footer_l1: str, footer_l2: str, cta: str, qr_file: str) -> str:
+    return f"""  <div class="footer-row">
+    <div class="foot-left">{_esc(footer_l1)}<br>{_esc(footer_l2)}</div>
+    <div class="cta">{_esc(cta)}</div>
+    <div class="qr-box"><img src="{_esc(qr_file)}" alt="入群二维码"></div>
+  </div>"""
+
+
+def _page_tail_html() -> str:
+    """分页尾页页脚：保留品牌信息与 CTA，不放二维码（小红书不允许上传二维码）。"""
+    return ('  <div class="footer-row">'
+            '    <div class="foot-left">'
+            + _esc(_FOOTER_L1) + "<br>" + _esc(_FOOTER_L2) + "</div>"
+            '    <div class="cta">' + _esc(_CTA) + "</div>"
+            '  </div>')
+
+
+def _module_header_html(zh: str, en: str, *, cont: bool = False) -> str:
+    """模块标题头（分页用）；cont=True 时附「续」角标，用于跨页延续的模块。"""
+    cont_tag = '<span class="cont-tag">续</span>' if cont else ""
+    return (f'<div class="pg-head"><div class="mod-head"><span class="sq"></span>'
+            f'<span class="zh">{_esc(zh)}{cont_tag}</span><span class="en">{_esc(en)}</span>'
+            f'<span class="line"></span></div></div>')
+
+
+def build_card_html(card: CaseCard, *, avatar_file: str, qr_file: str,
+                    brand: str = _BRAND, footer_l1: str = _FOOTER_L1,
+                    footer_l2: str = _FOOTER_L2, cta: str = _CTA,
+                    arrow_style: Optional[str] = None,
+                    diagram_override: Optional[dict[str, Any]] = None) -> str:
+    person_brief = _person_brief(card.facts)
+    if arrow_style is None:
+        arrow_style = str(get_settings().html_card_arrow_style or "curve")
+    diagram = diagram_override or layout_diagram(
+        card.relations, person_sub=person_brief, arrow_style=arrow_style,
+        topology=card.topology)
+
+    title_l1, title_l2 = _split_title(card.title)
+    masthead_html = _masthead_html(brand)
+    facts_avatar_html = _facts_avatar_html(card, avatar_file)
+    scenes_html = _scene_items_html(card)
+    chips_html = _chips_html(card)
+    analysis_html = "\n".join(
+        _analysis_item_html(i, tag, txt) for i, (tag, txt) in enumerate(card.analysis))
+    solutions_html = "\n".join(
+        _solution_item_html(i, tag, txt) for i, (tag, txt) in enumerate(card.solutions))
+    quotes_html = "\n".join(
+        _quote_html(q, sig, main=(i == 0)) for i, (q, sig) in enumerate(card.quotes))
+
+    diagram_html, canvas_h = _build_diagram_html(diagram, avatar_file)
+    relation_block = ""
+    if diagram_html:
+        summary = f'<div class="rel-sum">{_esc(card.relation_summary)}</div>' if card.relation_summary else ""
+        relation_block = (
+            '<div class="mod"><div class="mod-head"><span class="sq"></span>'
+            '<span class="zh">人物关系</span><span class="en">RELATION MAP</span><span class="line"></span></div>'
+            f'<div class="dg-panel">{diagram_html}</div>{summary}</div>'
+        )
+    question_block = _question_html(card.question) if card.question else ""
+    footer_row_html = _footer_row_html(footer_l1, footer_l2, cta, qr_file)
+    title_l2_html = f'<br><span class="l2">{_esc(title_l2)}</span>' if title_l2 else ""
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<style>{_card_css()}</style>
+</head>
+<body>
+{masthead_html}
+  <div class="title-wrap">
+    <div class="deco-quote serif">”</div>
+    <div class="title serif">{_esc(title_l1)}{title_l2_html}</div>
+    <div class="subtitle">{_esc(card.subtitle)}</div>
+  </div>
+  <div class="chips">{chips_html}</div>
+  <div class="mod">
+    <div class="mod-head"><span class="sq"></span><span class="zh">背景概述</span><span class="en">BACKGROUND</span><span class="line"></span></div>
+{facts_avatar_html}
     <div class="scenes">
 {scenes_html}
     </div>
@@ -1136,26 +1255,8 @@ def build_card_html(card: CaseCard, *, avatar_file: str, qr_file: str,
     <div class="mod-head"><span class="sq"></span><span class="zh">金句</span><span class="en">QUOTES</span><span class="line"></span></div>
 {quotes_html}
   </div>
-  <div class="footer-row">
-    <div class="foot-left">{_esc(footer_l1)}<br>{_esc(footer_l2)}</div>
-    <div class="cta">{_esc(cta)}</div>
-    <div class="qr-box"><img src="{_esc(qr_file)}" alt="入群二维码"></div>
-  </div>
-  <!-- 渲染兜底：画布高度按节点实际渲染高度自适应，杜绝节点溢出画布压到下方模块 -->
-  <script>
-  (function () {{
-    var canvases = document.querySelectorAll('.dg-canvas');
-    for (var i = 0; i < canvases.length; i++) {{
-      var canvas = canvases[i];
-      var maxBottom = 0;
-      var nodes = canvas.querySelectorAll('.dg-node');
-      for (var j = 0; j < nodes.length; j++) {{
-        maxBottom = Math.max(maxBottom, nodes[j].offsetTop + nodes[j].offsetHeight);
-      }}
-      if (maxBottom + 30 > canvas.offsetHeight) {{ canvas.style.height = (maxBottom + 30) + 'px'; }}
-    }}
-  }})();
-  </script>
+{footer_row_html}
+{_DIAGRAM_FIXUP_JS}
   <div id="endmark" style="height:8px;background:rgb(255,0,255);margin-top:48px;"></div>
 </body>
 </html>
@@ -1252,6 +1353,43 @@ def find_edge_binary(custom_path: str = "") -> str:
     raise RuntimeError("未找到 Edge/Chrome，请在设置中配置 TS_HTML_CARD_EDGE_PATH")
 
 
+def _edge_screenshot(browser: str, url: str, target: Path, window_w: int,
+                     window_h: int, dsf: int):
+    """Edge 无头截图到 target（绝对路径）并返回 PIL Image。"""
+    from PIL import Image
+
+    target = Path(target).resolve()  # Edge 对相对路径的落盘位置不可靠，必须绝对路径
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+    # ignore_cleanup_errors：Edge 后台进程可能短暂占用配置目录，清理失败不应阻断出图
+    with tempfile.TemporaryDirectory(prefix="html-card-edge-", ignore_cleanup_errors=True) as profile:
+        cmd = [
+            browser, "--headless=new", "--disable-gpu", "--hide-scrollbars",
+            "--no-first-run", "--no-default-browser-check",
+            f"--user-data-dir={profile}",
+            f"--screenshot={target}", f"--window-size={window_w},{window_h}",
+            f"--force-device-scale-factor={dsf}", "--virtual-time-budget=5000", url,
+        ]
+        subprocess.run(cmd, capture_output=True, timeout=180)
+        deadline = time.time() + 60
+        last_size = -1
+        stable = 0
+        while time.time() < deadline:
+            if target.exists():
+                size = target.stat().st_size
+                if size > 0 and size == last_size:
+                    stable += 1
+                    if stable >= 2:
+                        break
+                else:
+                    stable, last_size = 0, size
+            time.sleep(0.5)
+        if not target.exists():
+            raise RuntimeError(f"Edge 截图失败：{target}")
+        return Image.open(target)
+
+
 def render_html_to_png(html_path: Path, png_path: Path, *, scale: int = 2,
                        edge_path: str = "") -> tuple[int, int]:
     """对已有 HTML 截图（不修改 HTML）。返回 (宽, 高) 像素。手动改完 card.html 后用这个重出图。"""
@@ -1262,42 +1400,10 @@ def render_html_to_png(html_path: Path, png_path: Path, *, scale: int = 2,
     url = html_path.as_uri()
     probe_h = 10000
 
-    def _shoot(window_h: int, dsf: int, target: Path) -> Image.Image:
-        target = target.resolve()  # Edge 对相对路径的落盘位置不可靠，必须绝对路径
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            target.unlink()
-        # ignore_cleanup_errors：Edge 后台进程可能短暂占用配置目录，清理失败不应阻断出图
-        with tempfile.TemporaryDirectory(prefix="html-card-edge-", ignore_cleanup_errors=True) as profile:
-            cmd = [
-                browser, "--headless=new", "--disable-gpu", "--hide-scrollbars",
-                "--no-first-run", "--no-default-browser-check",
-                f"--user-data-dir={profile}",
-                f"--screenshot={target}", f"--window-size={CARD_WIDTH},{window_h}",
-                f"--force-device-scale-factor={dsf}", "--virtual-time-budget=5000", url,
-            ]
-            subprocess.run(cmd, capture_output=True, timeout=180)
-            deadline = time.time() + 60
-            last_size = -1
-            stable = 0
-            while time.time() < deadline:
-                if target.exists():
-                    size = target.stat().st_size
-                    if size > 0 and size == last_size:
-                        stable += 1
-                        if stable >= 2:
-                            break
-                    else:
-                        stable, last_size = 0, size
-                time.sleep(0.5)
-            if not target.exists():
-                raise RuntimeError(f"Edge 截图失败：{target}")
-            return Image.open(target)
-
     # 1) 超高预截图找哨兵行，确定内容高度
     probe_target = png_path.parent / "_probe.png"
     while True:
-        probe = _shoot(probe_h, 1, probe_target)
+        probe = _edge_screenshot(browser, url, probe_target, CARD_WIDTH, probe_h, 1)
         content_h = _find_sentinel_row(probe)
         if content_h > 0:
             break
@@ -1305,14 +1411,442 @@ def render_html_to_png(html_path: Path, png_path: Path, *, scale: int = 2,
             raise RuntimeError("卡片内容高度超出 16000px，请检查排版")
         probe_h += 3000
 
-    # 2) 按内容高度精确出图，按本图自身的哨兵行裁剪（规避 2x 子像素取整偏差）
-    image = _shoot(content_h + 80, scale, png_path)
+# 2) 按内容高度精确出图，按本图自身的哨兵行裁剪（规避 2x 子像素取整偏差）
+    image = _edge_screenshot(browser, url, png_path, CARD_WIDTH, content_h + 80, scale)
     row = _find_sentinel_row(image)
     if row > 0:
         image.crop((0, 0, image.width, row)).save(png_path)
     probe_target.unlink(missing_ok=True)
     final = Image.open(png_path)
     return final.size
+
+    # ---------------------------------------------------------------------------
+# 四.6、小红书 3:4 分页：整卡之外，另出一组 1080x1440 信息流图
+#      复用整卡样式与素材（../assets/...），HTML 持久化到 <卡目录>/pages/，
+#      手改 page_NN.html 后可用 CLI 只重截图。流程：组装内容块 -> 测量页标定
+#      块高（品红标记条，与整卡哨兵同机制）-> 贪心装页 -> 逐页截图 + 溢出校验。
+# ---------------------------------------------------------------------------
+
+PAGE_W = CARD_WIDTH     # 分页宽与整卡一致（1080）
+PAGE_H = 1440           # 3:4，小红书信息流标准竖图
+PAGE_GAP = 40           # 同页相邻内容块的垂直间距（CSS 像素）
+PAGE_BOTTOM_SAFE = 24   # 页底安全留白（哨兵校验余量）
+_MARKER_H = 6           # 测量页品红标记条高度
+_BRAND_SHORT = "「漫道」职场群"
+
+
+@dataclass
+class PageUnit:
+    """分页装箱的最小内容块：一个模块里可独立换页的一条内容。"""
+
+    key: str
+    html: str
+    module: str
+    head_zh: Optional[str] = None
+    head_en: Optional[str] = None
+    starts_module: bool = False
+    force_new_page: bool = False
+    height: int = 0      # 测量后回填（CSS 像素）
+
+
+def _page_css() -> str:
+    """分页专用样式：固定 1080x1440 页框、页眉、测量标记与缩放容器，叠加在整卡样式之后。"""
+    return """
+  html.pg, body.pg { width:1080px; height:1440px; overflow:hidden; background:#F7F3EC; }
+  body.pg { padding:0; }
+  .pg-top { display:flex; justify-content:space-between; align-items:baseline; padding:30px 48px 0; }
+  .pg-top .brand-s { font-size:30px; font-weight:900; letter-spacing:1px; }
+  .pg-top .brand-s::before { content:""; display:inline-block; width:14px; height:14px; background:#E8590C; margin-right:10px; }
+  .pg-top .pg-no { font-size:28px; font-weight:700; color:#6B655C; letter-spacing:3px; }
+  .pg-rule { border-bottom:4px solid #1A1A1A; margin:10px 48px 0; }
+  .pg-body { padding:28px 48px 0; }
+  .pg-body .blk + .blk { margin-top:40px; }
+  .pg-head { margin-bottom:20px; }
+  .cont-tag { display:inline-block; font-size:26px; color:#FFF; background:#E8590C;
+    border-radius:8px; padding:2px 12px; margin-left:14px; letter-spacing:2px; vertical-align:8px; }
+  .fit { position:relative; overflow:hidden; }
+  .fit-in { position:absolute; left:0; top:0; transform-origin:top left; }
+  .pg-end { height:6px; background:rgb(255,0,255); margin:8px -48px 0; }
+  .mk { height:6px; background:rgb(255,0,255); margin:0 -48px; }
+  body.pg-cover .title-wrap { margin-top:96px; }
+  body.pg-cover .subtitle { margin-top:44px; }
+  body.pg-cover .chips { margin-top:52px; }
+  html.pg-measure, body.pg-measure { height:auto; overflow:visible; }
+  body.pg-cover { padding:52px 48px 0; }
+  .cover-foot { position:absolute; left:48px; right:48px; bottom:52px; }
+  .cover-id { display:flex; align-items:center; gap:28px; margin-bottom:34px; }
+  .cover-id img { width:150px; height:150px; border-radius:50%; object-fit:cover; border:5px solid #1A1A1A; background:#FFF; }
+  .cover-id .who { font-size:40px; font-weight:900; line-height:1.4; }
+  .cover-id .who .sub { display:block; font-size:30px; color:#6B655C; font-weight:700; margin-top:8px; }
+  .cover-swipe { background:#1A1A1A; color:#FFF; border-left:16px solid #E8590C;
+    font-size:42px; font-weight:900; padding:26px 32px; letter-spacing:2px; }
+  .cover-swipe .arr { color:#E8590C; }
+"""
+
+
+def _build_page_units(card: CaseCard, *, avatar_file: str = "", qr_file: str = "",
+                      diagram_override: Optional[dict[str, Any]] = None) -> list[PageUnit]:
+    """把整卡内容拆成可独立换页的最小内容块序列（顺序即阅读顺序）。"""
+    person_brief = _person_brief(card.facts)
+    arrow_style = str(get_settings().html_card_arrow_style or "curve")
+    diagram = diagram_override or layout_diagram(
+        card.relations, person_sub=person_brief, arrow_style=arrow_style,
+        topology=card.topology)
+    diagram_html, _canvas_h = _build_diagram_html(diagram, avatar_file)
+
+    units: list[PageUnit] = []
+    if card.facts or avatar_file or card.scenes or card.question:
+        # 背景整模块一页：事实 + 场景 + 提问黑条（放不下时整体缩放，不跨页）
+        bg_parts: list[str] = []
+        if card.facts or avatar_file:
+            bg_parts.append(_facts_avatar_html(card, avatar_file))
+        if card.scenes:
+            bg_parts.append(_scenes_block_html(card))
+        if card.question:
+            bg_parts.append(_question_html(card.question))
+        units.append(PageUnit("bg", "\n".join(bg_parts),
+                              "bg", head_zh="背景概述", head_en="BACKGROUND", starts_module=True))
+    if diagram_html:
+        # 关系图与「整体结构」摘要同一页：图不带摘要显得残缺，摘要单独成页近乎空页
+        rel_inner = '<div class="dg-panel">' + diagram_html + '</div>'
+        if card.relation_summary:
+            rel_inner = rel_inner + "\n" + _rel_sum_html(card.relation_summary)
+        units.append(PageUnit("rel", rel_inner,
+                              "rel", head_zh="人物关系", head_en="RELATION MAP", starts_module=True))
+    if card.analysis:
+        units.append(PageUnit("ana", _analysis_list_html(card),
+                              "ana", head_zh="分析过程", head_en="ANALYSIS", starts_module=True))
+    if card.solutions:
+        units.append(PageUnit("sol", _solutions_panel_html(card),
+                              "sol", head_zh="解决方案", head_en="ACTION", starts_module=True))
+    # 金句 + 页脚整体成尾页：转化信息同页承载，多条金句也不跨页
+    quotes_html = "\n".join(
+        _quote_html(quote, sig, main=(i == 0))
+        for i, (quote, sig) in enumerate(card.quotes))
+    if quotes_html:
+        tail_html = quotes_html + "\n" + _page_tail_html()
+        units.append(PageUnit("tail", tail_html,
+                              "quo", head_zh="金句", head_en="QUOTES",
+                              starts_module=True, force_new_page=True))
+    else:
+        # 没有金句时页脚独立成尾页（不带模块头）
+        units.append(PageUnit("tail", _page_tail_html(),
+                              "end", head_zh=None, force_new_page=True))
+    return units
+
+
+def _pack_units(units: list[PageUnit], *, content_h: int, header_fresh_h: int,
+                header_cont_h: int, gap: int = PAGE_GAP) -> list[list[dict[str, Any]]]:
+    """按测得的块高贪心装页：模块头跟随模块首块，跨页补「续」头，超高单块整体缩放。"""
+    pages: list[list[dict[str, Any]]] = []
+    cur: list[dict[str, Any]] = []
+    used = 0
+    on_page: set[str] = set()
+    seen: set[str] = set()
+
+    def close_page() -> None:
+        nonlocal cur, used, on_page
+        if cur:
+            pages.append(cur)
+        cur, used, on_page = [], 0, set()
+
+    for u in units:
+        if u.force_new_page and cur:
+            close_page()
+
+        def decide_header() -> tuple[Optional[str], int]:
+            if not u.head_zh:
+                return None, 0
+            if u.module in on_page:
+                return None, 0
+            if u.starts_module or u.module not in seen:
+                return "fresh", header_fresh_h
+            return "cont", header_cont_h
+
+        header_kind, header_cost = decide_header()
+        gap_cost = gap if cur else 0
+        if cur and gap_cost + header_cost + u.height > content_h - used:
+            close_page()
+            header_kind, header_cost = decide_header()
+            gap_cost = 0
+        scale = 1.0
+        if header_cost + u.height > content_h - used:
+            # 页首仍放不下（常见于人物关系图）：整块等比缩放塞进一页
+            avail = max(content_h - header_cost, 120)
+            if u.height > avail:
+                scale = avail / u.height
+        cur.append({"unit": u, "header": header_kind, "scale": round(scale, 4)})
+        used += gap_cost + header_cost + int(u.height * scale)
+        on_page.add(u.module)
+        seen.add(u.module)
+    close_page()
+    return pages
+
+
+def _compose_page_block(entry: dict[str, Any]) -> str:
+    u: PageUnit = entry["unit"]
+    scale = float(entry["scale"] or 1.0)
+    head = ""
+    if entry["header"]:
+        head = _module_header_html(u.head_zh or "", u.head_en or "",
+                                   cont=(entry["header"] == "cont"))
+    inner = u.html
+    if scale < 1.0:
+        h = max(int(u.height * scale), 40)
+        inner = ('<div class="fit" style="width:984px;height:' + str(h) + 'px;">'
+                 '<div class="fit-in" style="width:984px;transform:scale('
+                 + f"{scale:.4f}" + ');">' + inner + "</div></div>")
+    return '<div class="blk">' + head + inner + "</div>"
+
+
+def _build_cover_page(card: CaseCard, *, total: int, avatar_file: str = "",
+                      brand: str = _BRAND, shrink: float = 1.0) -> str:
+    title_l1, title_l2 = _split_title(card.title)
+    title_l2_html = ('<br><span class="l2">' + _esc(title_l2) + "</span>") if title_l2 else ""
+    avatar_img = ('<img src="' + _esc(avatar_file) + '" alt="当事人头像">') if avatar_file else ""
+    who = _person_brief(card.facts)
+    head = (_masthead_html(brand) + "\n"
+            '  <div class="title-wrap">\n'
+            '    <div class="deco-quote serif">\u201d</div>\n'
+            '    <div class="title serif">' + _esc(title_l1) + title_l2_html + "</div>\n"
+            '    <div class="subtitle">' + _esc(card.subtitle) + "</div>\n"
+            "  </div>\n"
+            '  <div class="chips">' + _chips_html(card) + "</div>")
+    if shrink < 1.0:
+        h = max(int(950 * shrink), 200)
+        head = ('<div class="fit" style="width:984px;height:' + str(h) + 'px;">'
+                '<div class="fit-in" style="width:984px;transform:scale('
+                + f"{shrink:.4f}" + ');">' + head + "</div></div>")
+    return ("<!DOCTYPE html>\n"
+            '<html lang="zh-CN">\n<head>\n<meta charset="UTF-8">\n'
+            "<style>" + _card_css() + _page_css() + "</style>\n"
+            "</head>\n"
+            '<body class="pg pg-cover">\n'
+            + head + "\n"
+            '  <div class="pg-end"></div>\n'
+            '  <div class="cover-foot">\n'
+            '    <div class="cover-id">' + avatar_img
+            + '<div class="who">' + _esc(who)
+            + '<span class="sub">真实案例 · 已做化名处理</span></div></div>\n'
+            '    <div class="cover-swipe">左滑查看完整拆解 <span class="arr">\u2192</span> 共 ' + str(total) + " 页</div>\n"
+            "  </div>\n"
+            "</body>\n</html>\n")
+
+
+def _build_content_page(entries: list[dict[str, Any]], page_no: int, total: int, *,
+                        content_h: int = PAGE_H, shrink: float = 1.0) -> str:
+    blocks = "".join(_compose_page_block(entry) for entry in entries)
+    if shrink < 1.0:
+        h = max(int(content_h * shrink), 120)
+        blocks = ('<div class="fit" style="width:984px;height:' + str(h) + 'px;">'
+                  '<div class="fit-in" style="width:984px;transform:scale('
+                  + f"{shrink:.4f}" + ');">' + blocks + "</div></div>")
+    return ("<!DOCTYPE html>\n"
+            '<html lang="zh-CN">\n<head>\n<meta charset="UTF-8">\n'
+            "<style>" + _card_css() + _page_css() + "</style>\n"
+            "</head>\n"
+            '<body class="pg">\n'
+            '  <div class="pg-top"><div class="brand-s">' + _esc(_BRAND_SHORT)
+            + '</div><div class="pg-no">' + f"{page_no:02d} / {total:02d}" + "</div></div>\n"
+            '  <div class="pg-rule"></div>\n'
+            '  <div class="pg-body">\n' + blocks + "\n  </div>\n"
+            + _DIAGRAM_FIXUP_JS + "\n"
+            '  <div class="pg-end"></div>\n'
+            "</body>\n</html>\n")
+
+
+def _build_measure_page(units: list[PageUnit]) -> str:
+    parts: list[str] = []
+    for u in units:
+        parts.append('<div class="mk"></div>')
+        parts.append('<div class="blk">' + u.html + "</div>")
+    parts.append('<div class="mk"></div>')
+    return ("<!DOCTYPE html>\n"
+            '<html lang="zh-CN">\n<head>\n<meta charset="UTF-8">\n'
+            "<style>" + _card_css() + _page_css() + "</style>\n"
+            "</head>\n"
+            '<body class="pg pg-measure">\n'
+            '  <div class="pg-top"><div class="brand-s">' + _esc(_BRAND_SHORT)
+            + '</div><div class="pg-no">MEASURE</div></div>\n'
+            '  <div class="pg-rule"></div>\n'
+            '  <div class="pg-body">\n' + "\n".join(parts) + "\n  </div>\n"
+            + _DIAGRAM_FIXUP_JS + "\n"
+            "</body>\n</html>\n")
+
+
+def _find_marker_rows(image) -> list[int]:
+    """扫描整行命中的品红标记条，返回每段的起始 y（测量页标定各块高度用）。"""
+    pixels = image.load()
+    width, height = image.width, image.height
+    rows: list[int] = []
+    in_marker = False
+    samples = len(range(0, width, 24))
+    for y in range(height):
+        hits = 0
+        for x in range(0, width, 24):
+            r, g, b = pixels[x, y][:3]
+            if abs(r - SENTINEL_COLOR[0]) < 40 and g < 40 and abs(b - SENTINEL_COLOR[2]) < 40:
+                hits += 1
+        hit = samples and hits * 100 >= samples * 85
+        if hit and not in_marker:
+            rows.append(y)
+        in_marker = hit
+    return rows
+
+
+def _erase_marker_band(image, y: int, scale: int) -> None:
+    """把成品图里的哨兵条涂回页面底色（分页按整窗截图，哨兵不会被裁掉，必须擦除）。"""
+    from PIL import ImageDraw
+
+    draw = ImageDraw.Draw(image)
+    top = max(y - 4, 0)
+    bottom = min(y + int(_MARKER_H * scale) + 8, image.height)
+    draw.rectangle([0, top, image.width, bottom], fill=(247, 243, 236))
+
+
+def _measure_page_units(units: list[PageUnit], *, browser: str, measure_html: Path,
+                        work_dir: Path) -> tuple[list[int], int]:
+    """渲染测量页并扫描标记，返回 (各块高度列表, 页眉区高度 chrome_h)。"""
+    url = measure_html.resolve().as_uri()
+    probe_target = work_dir / "_measure_probe.png"
+    probe_h = 6000
+    expected = len(units) + 1      # 每块前 1 条 + 末尾 1 条
+    while True:
+        image = _edge_screenshot(browser, url, probe_target, PAGE_W, probe_h, 1)
+        ys = _find_marker_rows(image)
+        if len(ys) >= expected:
+            break
+        if probe_h >= 24000:
+            raise RuntimeError(f"分页测量标记不齐（{len(ys)}/{expected}），内容疑似异常超高")
+        probe_h += 4000
+    probe_target.unlink(missing_ok=True)
+    chrome_h = ys[0]
+    heights = [max(ys[i + 1] - ys[i] - _MARKER_H, 0) for i in range(len(units))]
+    return heights, chrome_h
+
+
+def render_case_card_pages(card: CaseCard, out_dir: Path, *, avatar_file: str = "",
+                           qr_file: str = "", diagram_override: Optional[dict[str, Any]] = None,
+                           edge_path: str = "", scale: int = 2) -> tuple[Path, int]:
+    """把整卡内容重排成 3:4 分页并截图，产物写入 <out_dir>/pages/，返回 (目录, 页数)。"""
+    browser = find_edge_binary(edge_path)
+    pages_dir = Path(out_dir) / "pages"
+    pages_dir.mkdir(parents=True, exist_ok=True)
+
+    units = _build_page_units(card, avatar_file=avatar_file, qr_file=qr_file,
+                              diagram_override=diagram_override)
+    # 头部探针放最前：一次测量顺带标定 fresh/cont 两种模块头的高度
+    measure_units = [
+        PageUnit("__hdr_fresh", _module_header_html("背景概述", "BACKGROUND"), "__probe"),
+        PageUnit("__hdr_cont", _module_header_html("背景概述", "BACKGROUND", cont=True), "__probe"),
+    ] + units
+    measure_html = pages_dir / "_measure.html"
+    measure_html.write_text(_build_measure_page(measure_units), encoding="utf-8")
+    try:
+        heights, chrome_h = _measure_page_units(measure_units, browser=browser,
+                                                measure_html=measure_html, work_dir=pages_dir)
+    finally:
+        measure_html.unlink(missing_ok=True)
+    for u, h in zip(units, heights[2:]):
+        u.height = h
+    content_h = PAGE_H - chrome_h - PAGE_BOTTOM_SAFE
+    packed = _pack_units(units, content_h=content_h,
+                         header_fresh_h=heights[0], header_cont_h=heights[1])
+    total = len(packed) + 1
+    if total > 18:
+        logger.info("小红书单帖上限 18 图，本次分页共 {} 页，发布时需拆帖", total)
+
+    jobs: list[dict[str, Any]] = [{"page_no": 1, "entries": None}]
+    jobs.extend({"page_no": no, "entries": entries}
+                for no, entries in enumerate(packed, start=2))
+    for job in jobs:
+        page_no = job["page_no"]
+        html_path = pages_dir / f"page_{page_no:02d}.html"
+        png_path = pages_dir / f"page_{page_no:02d}.png"
+        shrink = 1.0
+        ok = False
+        for _attempt in range(4):
+            if job["entries"] is None:
+                html = _build_cover_page(card, total=total, avatar_file=avatar_file,
+                                         shrink=shrink)
+            else:
+                html = _build_content_page(job["entries"], page_no, total,
+                                           content_h=content_h, shrink=shrink)
+            html_path.write_text(html, encoding="utf-8")
+            image = _edge_screenshot(browser, html_path.resolve().as_uri(), png_path,
+                                     PAGE_W, PAGE_H, scale)
+            rows = _find_marker_rows(image)
+            # 哨兵可见即未溢出；封面额外要求哨兵在底部信息带（约 y=1100）之上
+            if rows and (job["entries"] is not None or rows[0] <= int(1040 * scale)):
+                _erase_marker_band(image, rows[0], scale)
+                image.save(png_path)
+                ok = True
+                break
+            shrink = max(shrink * 0.94, 0.7)
+        if not ok:
+            logger.warning("分页第 {}/{} 页疑似溢出（多次缩放仍未检出哨兵），保留最后一次渲染",
+                           page_no, total)
+    for pattern in ("page_*.html", "page_*.png"):
+        for stale in pages_dir.glob(pattern):
+            m = re.match(r"page_(\d+)", stale.stem)
+            if m and int(m.group(1)) > total:
+                stale.unlink()
+    logger.info("小红书 3:4 分页已渲染 dir={} pages={}", pages_dir, total)
+    return pages_dir, total
+
+
+def rebuild_card_pages(card_dir: Path, *, scale: int = 0, edge_path: str = "") -> tuple[Path, int]:
+    """按 card_data.json + 现有素材重建分页（不重渲染整卡），CLI pages 子命令入口。"""
+    settings = get_settings()
+    card_dir = Path(card_dir)
+    data_file = card_dir / "card_data.json"
+    if not data_file.is_file():
+        raise RuntimeError(f"未找到 {data_file}")
+    card = CaseCard.from_dict(json.loads(data_file.read_text(encoding="utf-8")))
+    card.relations = _normalize_relation_names(card)
+    assets = card_dir / "assets"
+    avatar_file = ""
+    for candidate in sorted(assets.glob("avatar.*")):
+        avatar_file = "../assets/" + candidate.name
+        break
+    if not (assets / "qr.png").exists():
+        build_qr_png(settings.html_card_join_url or "https://md.xinjianhub.cn/#join-us",
+                     assets / "qr.png")
+    diagram_override = None
+    relation_png = assets / "relation.png"
+    if relation_png.exists():
+        from PIL import Image
+
+        with Image.open(relation_png) as im:
+            width, height = im.size
+        diagram_override = {"image_file": "../assets/relation.png",
+                            "canvas_h": int(DIAGRAM_CANVAS_W * height / width),
+                            "nodes": {}, "edges": []}
+    return render_case_card_pages(
+        card, card_dir, avatar_file=avatar_file, qr_file="../assets/qr.png",
+        diagram_override=diagram_override,
+        edge_path=edge_path or settings.html_card_edge_path,
+        scale=scale or int(settings.html_card_render_scale))
+
+
+def reshoot_card_pages(card_dir: Path, *, scale: int = 0, edge_path: str = "") -> int:
+    """对已有 pages/page_NN.html 只重截图（不改动 HTML），无分页产物时返回 0。"""
+    settings = get_settings()
+    pages_dir = Path(card_dir) / "pages"
+    htmls = sorted(pages_dir.glob("page_*.html")) if pages_dir.is_dir() else []
+    if not htmls:
+        return 0
+    browser = find_edge_binary(edge_path or settings.html_card_edge_path)
+    for html_path in htmls:
+        png_path = html_path.with_suffix(".png")
+        image = _edge_screenshot(browser, html_path.resolve().as_uri(), png_path,
+                                 PAGE_W, PAGE_H, scale or int(settings.html_card_render_scale))
+        rows = _find_marker_rows(image)
+        if rows:
+            _erase_marker_band(image, rows[0], scale or int(settings.html_card_render_scale))
+            image.save(png_path)
+    return len(htmls)
+
 
 
 def _find_sentinel_row(image) -> int:
@@ -1654,8 +2188,24 @@ def render_case_card(card: CaseCard, out_dir: Path, *, join_url: str = "",
     png_path = out_dir / "card.png"
     width, height = render_html_to_png(html_path, png_path, scale=scale, edge_path=edge_path)
     logger.info("HTML 案例卡已渲染 index={} dir={} size={}x{}", card_index, out_dir, width, height)
+
+    pages_dir: Optional[Path] = None
+    page_count = 0
+    if getattr(settings, "html_card_split_pages_enabled", True):
+        try:
+            pages_dir, page_count = render_case_card_pages(
+                card, out_dir,
+                avatar_file=("../assets/" + avatar_name) if avatar_name else "",
+                qr_file="../assets/" + qr_name,
+                diagram_override=(
+                    {**diagram_override, "image_file": "../assets/relation.png"}
+                    if diagram_override and diagram_override.get("image_file") else None),
+                edge_path=edge_path, scale=scale)
+        except Exception as exc:  # noqa: BLE001 分页失败只告警，绝不阻断整卡
+            logger.warning("小红书 3:4 分页渲染失败（整卡不受影响）：{}", exc)
     return RenderedCard(html_path=html_path, png_path=png_path, data_path=data_path,
-                        width=width, height=height, relation_model=relation_winner)
+                        width=width, height=height, relation_model=relation_winner,
+                        pages_dir=pages_dir, page_count=page_count)
 
 
 async def render_case_cards(
@@ -1714,6 +2264,7 @@ async def render_case_cards(
             "image": image,
             "models": [None],
             "attempts": [[]],
+            "page_count": rendered.page_count,
         })
         cards_meta.append({
             "index": index,
@@ -1723,6 +2274,8 @@ async def render_case_cards(
             "size": f"{rendered.width}x{rendered.height}",
             "relation_engine": relation_engine,
             "relation_model": rendered.relation_model or None,
+            "page_count": rendered.page_count,
+            "pages_dir": str(rendered.pages_dir) if rendered.pages_dir else None,
         })
 
     meta = {
@@ -1767,6 +2320,7 @@ async def render_case_cards_as_files(
             "layout": "single",
             "title": card.title,
             "html_path": item.html_path,
+            "page_count": item.page_count,
         })
         cards_meta.append({
             "index": index,
@@ -1774,6 +2328,8 @@ async def render_case_cards_as_files(
             "html_path": str(item.html_path),
             "png_path": str(item.png_path),
             "size": f"{item.width}x{item.height}",
+            "page_count": item.page_count,
+            "pages_dir": str(item.pages_dir) if item.pages_dir else None,
         })
         logger.info("HTML 案例卡已渲染（话题卡片链路）index={} dir={}", index, run_dir / f"{index:02d}")
     meta = {

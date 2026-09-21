@@ -382,6 +382,7 @@ def _image_card_item(item: Dict[str, Any], fallback_size: Any) -> Dict[str, Any]
         "请求尺寸": requested_size,
         "实际尺寸": str(actual_size) if actual_size else "-",
         "文件大小": _format_bytes(item.get("size_bytes")),
+        "分页": _format_page_count(item.get("page_count")),
         "错误信息": item.get("error"),
         "推送记录": [
             {
@@ -426,6 +427,15 @@ def _topic_delivery_item(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _format_page_count(value: Any) -> str:
+    """小红书 3:4 分页数量的展示文案（无分页信息时显示 -）。"""
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return "-"
+    return f"{count} 页" if count > 0 else "-"
+
+
 def _topic_image_item(image: Dict[str, Any]) -> Dict[str, Any]:
     width = image.get("width")
     height = image.get("height")
@@ -435,6 +445,7 @@ def _topic_image_item(image: Dict[str, Any]) -> Dict[str, Any]:
         "图片布局": _image_layout_label(image.get("layout")),
         "图片尺寸": f"{width or '-'} × {height or '-'}",
         "文件大小": _format_bytes(size_bytes),
+        "分页": _format_page_count(image.get("page_count")),
         "图片标识": str(image.get("image_key") or "-"),
     }
 

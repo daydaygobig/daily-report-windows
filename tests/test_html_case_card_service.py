@@ -327,3 +327,134 @@ def test_normalize_relation_names_leaves_role_labels_untouched():
     card = svc.CaseCard(relations=[svc.RelationEdge("当事人", "硬刚", "直属领导", "不接甩锅")])
     normalized = svc._normalize_relation_names(card)
     assert (normalized[0].source, normalized[0].target) == ("当事人", "直属领导")
+# ---------------------------------------------------------------------------
+# 小红书 3:4 分页：内容块序列 + 装箱算法 + 页面模板（不含 Edge 渲染）
+# ---------------------------------------------------------------------------
+
+def _mk_unit(key: str, module: str, height: int, *, starts_module: bool = False,
+             force_new_page: bool = False, head: str = "M"):
+    return svc.PageUnit(key, f"<div>{key}</div>", module,
+                        head_zh=head if head else None, head_en="EN",
+                        starts_module=starts_module, force_new_page=force_new_page,
+                        height=height)
+
+
+def test_pack_units_splits_pages_by_height():
+    units = [
+        _mk_unit("a1", "a", 400, starts_module=True),
+        _mk_unit("a2", "a", 400),
+        _mk_unit("b1", "b", 900, starts_module=True),
+    ]
+    pages = svc._pack_units(units, content_h=1000, header_fresh_h=90, header_cont_h=90)
+    assert [[e["unit"].key for e in page] for page in pages] == [["a1", "a2"], ["b1"]]
+    assert pages[0][0]["header"] == "fresh" and pages[0][1]["header"] is None
+    assert pages[1][0]["header"] == "fresh"
+
+
+def test_pack_units_reuses_cont_header_across_pages():
+    """同模块跨页：后续页补「续」头，而不是重复完整模块头。"""
+    units = [
+        _mk_unit("a1", "a", 700, starts_module=True),
+        _mk_unit("a2", "a", 700),
+        _mk_unit("a3", "a", 200),
+    ]
+    pages = svc._pack_units(units, content_h=900, header_fresh_h=90, header_cont_h=90)
+    keys = [[e["unit"].key for e in page] for page in pages]
+    assert keys == [["a1"], ["a2"], ["a3"]]
+    assert pages[1][0]["header"] == "cont" and pages[2][0]["header"] == "cont"
+
+
+def test_pack_units_scales_oversize_unit():
+    """单块超页高（如人物关系图）：整块等比缩放塞进一页。"""
+    units = [_mk_unit("rel", "rel", 2200, starts_module=True)]
+    pages = svc._pack_units(units, content_h=1200, header_fresh_h=90, header_cont_h=90)
+    assert len(pages) == 1
+    entry = pages[0][0]
+    assert 0 < entry["scale"] < 1.0
+    assert 90 + int(2200 * entry["scale"]) <= 1200
+
+
+def test_pack_units_force_new_page_and_no_duplicate_header():
+    units = [
+        _mk_unit("s1", "sol", 300, starts_module=True),
+        _mk_unit("q1", "quo", 300, starts_module=True, force_new_page=True),
+        _mk_unit("f", "quo", 200, head=None),
+    ]
+    pages = svc._pack_units(units, content_h=2000, header_fresh_h=90, header_cont_h=90)
+    keys = [[e["unit"].key for e in page] for page in pages]
+    assert keys == [["s1"], ["q1", "f"]]
+    assert pages[1][1]["header"] is None   # 同页模块头不重复
+
+
+def test_build_page_units_module_order():
+    cards = svc.parse_case_blocks(_sample_blocks())
+    units = svc._build_page_units(cards[0], avatar_file="../assets/avatar.png",
+                                  qr_file="../assets/qr.png")
+    keys = [u.key for u in units]
+    assert keys[0] == "bg" and units[0].starts_module
+    assert "rel" in keys and "ana" in keys and "sol" in keys
+    assert keys[-1] == "tail"
+    tail = next(u for u in units if u.key == "tail")
+    assert tail.force_new_page and tail.starts_module
+    # 背景整模块一页：事实 + 场景 + 提问黑条同块
+    bg = units[0]
+    assert "facts-avatar" in bg.html and "scenes" in bg.html and "question-band" in bg.html
+    # 尾页页脚无二维码（小红书不允许上传二维码）
+    assert 'class="qr-box"' not in tail.html and "cta" in tail.html
+    ana = next(u for u in units if u.key == "ana")
+    assert "ana-list" in ana.html and ana.html.count('<div class="item">') == 2
+    sol = next(u for u in units if u.key == "sol")
+    assert "sol-panel" in sol.html and sol.html.count('<div class="item">') == 2
+    assert "quote" in tail.html
+
+
+def test_module_units_never_split_across_pages():
+    """分析/方案/金句+页脚为整模块块：放不下就整块缩放，绝不跨页。"""
+    units = [
+        _mk_unit("bg", "bg", 300, starts_module=True),
+        _mk_unit("ana", "ana", 2000, starts_module=True),
+        _mk_unit("sol", "sol", 1500, starts_module=True),
+        _mk_unit("tail", "quo", 900, starts_module=True, force_new_page=True),
+    ]
+    pages = svc._pack_units(units, content_h=1200, header_fresh_h=90, header_cont_h=90)
+    keys = [[e["unit"].key for e in page] for page in pages]
+    assert keys == [["bg"], ["ana"], ["sol"], ["tail"]]   # 每个整模块独占一页
+    ana_page = pages[1][0]
+    assert ana_page["scale"] < 1.0                        # 超高整块缩放而非拆分
+    assert 90 + int(2000 * ana_page["scale"]) <= 1200
+
+
+def test_case_card_pages_structure():
+    cards = svc.parse_case_blocks(_sample_blocks())
+    card = cards[0]
+    units = svc._build_page_units(card, avatar_file="../assets/avatar.png",
+                                  qr_file="../assets/qr.png")
+    for u in units:
+        u.height = 260
+    packed = svc._pack_units(units, content_h=1000, header_fresh_h=90, header_cont_h=90)
+    assert packed, "内容页不应为空"
+    total = len(packed) + 1
+    cover = svc._build_cover_page(card, total=total, avatar_file="../assets/avatar.png")
+    assert "title serif" in cover and "超额责任心" in cover   # 大标题 + 关键词进封面
+    assert "左滑查看完整拆解" in cover and f"共 {total} 页" in cover
+    assert "pg-end" in cover                                   # 封面哨兵可校验
+    page2 = svc._build_content_page(packed[0], 2, total)
+    assert "02 / " in page2 and "pg-end" in page2 and "pg-body" in page2
+    assert "背景概述" in page2                                  # 首个内容页带模块头
+    assert "../assets/avatar.png" in page2                     # 素材走 pages/ 相对路径
+    last = svc._build_content_page(packed[-1], len(packed) + 1, total)
+    assert "quote" in last and "cta" in last                   # 尾页：金句 + CTA
+    for page_no, entries in enumerate(packed, start=2):
+        html = svc._build_content_page(entries, page_no, total)
+        assert 'class="qr-box"' not in html                     # 全部分页无二维码（CSS 选择器除外）
+
+
+def test_find_marker_rows_on_synthetic_image():
+    from PIL import Image
+
+    img = Image.new("RGB", (200, 300), (247, 243, 236))
+    for band in (50, 200):
+        for y in range(band, band + 6):
+            for x in range(200):
+                img.putpixel((x, y), (255, 0, 255))
+    assert svc._find_marker_rows(img) == [50, 200]

@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     html_card_arrow_style: str = "curve"                # 关系图箭头样式：curve=弧线箭头 / solid=实心大三角直线
     html_card_relation_engine: str = "svg"              # 关系图引擎：svg=确定性渲染（默认）/ image=生图模型绘制
     html_card_relation_image_size: str = "1536x1024"    # 关系图生图尺寸（image 引擎时生效）
+    html_card_split_pages_enabled: bool = True          # 整卡之外自动产出小红书 3:4 分页图（pages/ 目录）
 
     # Alerting
     default_alert_webhook_id: Optional[int] = None

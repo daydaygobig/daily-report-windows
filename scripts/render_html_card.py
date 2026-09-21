@@ -10,6 +10,9 @@
     # 手改过 card_data.json 后重建 HTML 并出图（会覆盖 card.html）：
     python scripts/render_html_card.py build data/html_cards/<run>/<NN>/card_data.json
 
+    # 按 card_data.json 重建小红书 3:4 分页（不影响整卡）：
+    python scripts/render_html_card.py pages data/html_cards/<run>/<NN>
+
 render 只截图、绝不改动 card.html；build 会按数据重新生成 card.html。
 """
 from __future__ import annotations
@@ -46,6 +49,20 @@ def cmd_render(target: str, scale: int) -> None:
         edge_path=settings.html_card_edge_path,
     )
     print(f"[OK] 已重渲染（card.html 未改动）\n  HTML: {html_path}\n  PNG : {png_path} ({width}x{height})")
+    pages = svc.reshoot_card_pages(card_dir, scale=scale, edge_path=settings.html_card_edge_path)
+    if pages:
+        print(f"[OK] 分页已重截图（page_*.html 未改动，共 {pages} 页）\n  DIR : {card_dir / 'pages'}")
+
+
+def cmd_pages(target: str, scale: int) -> None:
+    settings = get_settings()
+    card_dir = _resolve_card_dir(Path(target))
+    try:
+        pages_dir, total = svc.rebuild_card_pages(
+            card_dir, scale=scale, edge_path=settings.html_card_edge_path)
+    except Exception as exc:  # noqa: BLE001 CLI 直接透出原因
+        raise SystemExit(f"分页重建失败：{exc}") from exc
+    print(f"[OK] 小红书 3:4 分页已重建（共 {total} 页，整卡未改动）\n  DIR : {pages_dir}")
 
 
 def cmd_build(data_path: str, scale: int) -> None:
@@ -80,12 +97,18 @@ def main() -> None:
     p_build.add_argument("data", help="card_data.json 路径")
     p_build.add_argument("--scale", type=int, default=0, help="输出倍率（默认取配置）")
 
+    p_pages = sub.add_parser("pages", help="按 card_data.json 重建小红书 3:4 分页图（不影响整卡）")
+    p_pages.add_argument("target", help="卡目录或 card_data.json 路径")
+    p_pages.add_argument("--scale", type=int, default=0, help="输出倍率（默认取配置）")
+
     args = parser.parse_args()
     settings = get_settings()
     if args.command == "render":
         cmd_render(args.target, args.scale)
     elif args.command == "build":
         cmd_build(args.data, args.scale)
+    elif args.command == "pages":
+        cmd_pages(args.target, args.scale)
 
 
 if __name__ == "__main__":

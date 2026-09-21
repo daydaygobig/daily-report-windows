@@ -425,9 +425,9 @@ const ExecutionDetailModal = ({
                           <Paragraph key={`${image.图片标识 ?? "图片"}-${imageIndex}`} style={{ marginBottom: 4 }}>
                             {`图片 ${imageIndex + 1}：渲染引擎 ${image.渲染引擎 ?? "-"}，图片布局 ${
                               image.图片布局 ?? "-"
-                            }，图片尺寸 ${image.图片尺寸 ?? "-"}，文件大小 ${image.文件大小 ?? "-"}，图片标识 ${
-                              image.图片标识 ?? "-"
-                            }`}
+                            }，图片尺寸 ${image.图片尺寸 ?? "-"}，文件大小 ${image.文件大小 ?? "-"}，分页 ${
+                              image.分页 ?? "-"
+                            }，图片标识 ${image.图片标识 ?? "-"}`}
                           </Paragraph>
                         ))}
                       </div>
@@ -458,7 +458,7 @@ const ExecutionDetailModal = ({
           size="small"
           pagination={false}
           dataSource={rows}
-          scroll={{ x: 940 }}
+          scroll={{ x: 1020 }}
           locale={{ emptyText: "暂无图片结果" }}
           columns={[
               {
@@ -478,6 +478,7 @@ const ExecutionDetailModal = ({
                 render: (value) => (!value || value === "历史记录未采集" ? "—" : value)
               },
               { title: "图片大小", dataIndex: "文件大小", width: 110, render: (value) => value || "-" },
+              { title: "分页", dataIndex: "分页", width: 80, render: (value) => value || "-" },
               {
                 title: "生成状态",
                 dataIndex: "生成状态",

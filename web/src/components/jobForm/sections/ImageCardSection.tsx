@@ -25,7 +25,7 @@ function ImageCardSection({
         label={htmlEngineEnabled ? "关系图生图提示词模板" : "图片提示词模板"}
         tooltip={
           htmlEngineEnabled
-            ? "本地 HTML 引擎已开启：整卡由 HTML 排版渲染，该模板用于人物关系图的生图提示词（画型/节点/连线占位符由系统按卡片数据自动填充）。"
+            ? "本地 HTML 引擎已开启：整卡由 HTML 排版渲染，该模板用于人物关系图的生图提示词（画型/节点/连线占位符由系统按卡片数据自动填充）。出卡时会自动产出小红书 3:4 分页图（与整卡同目录 pages/ 下）。"
             : "该模板只负责每张图片的视觉风格和排版要求，会与拆分后的每个 Markdown 内容块组合后发送给图片模型。"
         }
         rules={[{ required: true, message: "请选择图片提示词模板" }]}
@@ -103,7 +103,7 @@ function ImageCardSection({
       ) : null}
       {htmlEngineEnabled ? (
         <Typography.Text type="secondary" style={{ display: "block", marginTop: -8, marginBottom: 16 }}>
-          本地 HTML 引擎已开启：整卡由 HTML 排版渲染，图片比例 / 分辨率不适用。
+          本地 HTML 引擎已开启：整卡由 HTML 排版渲染，图片比例 / 分辨率不适用；出卡时自动产出小红书 3:4 分页图（2160x2880，与整卡同目录 pages/ 下）。
         </Typography.Text>
       ) : (
         <>
