@@ -2268,6 +2268,16 @@ def render_case_card(card: CaseCard, out_dir: Path, *, join_url: str = "",
         except Exception as exc:  # noqa: BLE001 生图失败回退 SVG，绝不阻断出卡
             logger.warning("关系图生图失败（模型链 {} 家全败），本卡回退 SVG 渲染：{}",
                            len(model_chain), exc)
+    if not diagram_override and (assets / "relation.png").exists():
+        # 无生图模型（CLI 重建等场景）时，复用已持久化的生图关系图，不回退 HTML/SVG
+        from PIL import Image
+
+        with Image.open(assets / "relation.png") as im:
+            _w, _h = im.size
+        diagram_override = {"image_file": "assets/relation.png",
+                            "canvas_h": max(1, int(DIAGRAM_CANVAS_W * _h / _w)),
+                            "nodes": {}, "edges": []}
+        relation_winner = "persisted"
 
     html = build_card_html(
         card,
