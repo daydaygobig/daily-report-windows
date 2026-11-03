@@ -1284,7 +1284,8 @@ def build_card_html(card: CaseCard, *, avatar_file: str, qr_file: str,
     if arrow_style is None:
         arrow_style = str(get_settings().html_card_arrow_style or "curve")
     diagram = diagram_override or layout_diagram(
-        card.relations, person_sub=person_brief, arrow_style=arrow_style,
+        card.relations, person_label=_ip_name(card.gender),
+        person_sub=person_brief, arrow_style=arrow_style,
         topology=card.topology)
 
     title_l1, title_l2 = _split_title(card.title)
@@ -1585,7 +1586,8 @@ def _build_page_units(card: CaseCard, *, avatar_file: str = "", qr_file: str = "
     person_brief = _person_brief(card.facts)
     arrow_style = str(get_settings().html_card_arrow_style or "curve")
     diagram = diagram_override or layout_diagram(
-        card.relations, person_sub=person_brief, arrow_style=arrow_style,
+        card.relations, person_label=_ip_name(card.gender),
+        person_sub=person_brief, arrow_style=arrow_style,
         topology=card.topology)
     diagram_html, _canvas_h = _build_diagram_html(diagram, avatar_file)
 
@@ -2004,19 +2006,21 @@ def _rank_role_labels(name: str, context: str) -> list[str]:
 def _normalize_relation_names(card: CaseCard) -> list[RelationEdge]:
     """把关系图节点里的化名换成身份标签（SVG 与生图共用）。
 
-    张三→当事人；其余化名按卡片上下文推断身份称谓（是同事写同事、是领导写领导），
+    当事人节点统一换成 IP 角色名（男=小马、女=小牛，含旧版化名「张三」与「当事人」
+    两种写法）；其余化名按卡片上下文推断身份称谓（是同事写同事、是领导写领导），
     取频次最高且不与已有节点撞名的候选；完全没有线索时用「相关人」，
     候选全部撞名时加 A/B 后缀（如 同事A）。
     """
     relations = card.relations
     endpoints = ({rel.source.strip() for rel in relations}
                  | {rel.target.strip() for rel in relations})
-    if not endpoints & set(_ALL_PSEUDONYMS):
+    person = _ip_name(card.gender)
+    if not endpoints & (set(_ALL_PSEUDONYMS) | {"当事人", "小马", "小牛"}):
         return relations
 
     context = _relation_context_text(card)
-    mapping: dict[str, str] = {_PSEUDONYM_PRIMARY: "当事人"}
-    used = (endpoints - set(_ALL_PSEUDONYMS)) | {"当事人"}
+    mapping: dict[str, str] = {_PSEUDONYM_PRIMARY: person, "当事人": person}
+    used = (endpoints - set(_ALL_PSEUDONYMS)) | {person}
 
     def convert(name: str) -> str:
         key = name.strip()
@@ -2036,7 +2040,8 @@ def _normalize_relation_names(card: CaseCard) -> list[RelationEdge]:
         used.add(label)
         return label
 
-    return [RelationEdge(convert(rel.source), rel.verb, convert(rel.target), rel.why)
+    return [RelationEdge(convert(rel.source), rel.verb, convert(rel.target),
+                         (rel.why or "").replace("当事人", person) or rel.why)
             for rel in relations]
 
 
@@ -2073,7 +2078,8 @@ def compose_relation_prompt(card: CaseCard, template_text: str = "") -> tuple[st
     from ..default_prompt_templates import RELATION_IMAGE_PROMPT_TEMPLATE
 
     relations = _normalize_relation_names(card)
-    layout = layout_diagram(relations, topology=card.topology)
+    layout = layout_diagram(relations, person_label=_ip_name(card.gender),
+                            topology=card.topology)
     mode = layout["mode"]
     center = layout["center"]
     ghosts = {name for name in layout["nodes"] if _is_ghost(name)}

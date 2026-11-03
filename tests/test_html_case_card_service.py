@@ -302,7 +302,7 @@ def test_normalize_relation_names_maps_pseudonyms_to_role_labels():
     )
     normalized = svc._normalize_relation_names(card)
     assert [(r.source, r.target) for r in normalized] == [
-        ("当事人", "主任"), ("同级同事", "相关人")]   # 李四→同级同事；王二麻子无线索→相关人
+        ("小马", "主任"), ("同级同事", "相关人")]   # 张三→小马（IP名）；李四→同级同事；王二麻子无线索→相关人
     # 原列表不被修改（调用方自行决定是否回写）
     assert card.relations[0].source == "张三"
 
@@ -320,13 +320,14 @@ def test_normalize_relation_names_skips_collision_with_existing_node():
     names = sorted({r.source for r in normalized} | {r.target for r in normalized})
     assert "李四" not in names and "张三" not in names
     # 「主任」不与已有「同事」节点撞名，直接可用
-    assert "主任" in names and "当事人" in names and "同事" in names
+    assert "主任" in names and "小马" in names and "同事" in names
 
 
 def test_normalize_relation_names_leaves_role_labels_untouched():
     card = svc.CaseCard(relations=[svc.RelationEdge("当事人", "硬刚", "直属领导", "不接甩锅")])
     normalized = svc._normalize_relation_names(card)
-    assert (normalized[0].source, normalized[0].target) == ("当事人", "直属领导")
+    # 身份标签原样保留；当事人节点换成 IP 名（默认男=小马）
+    assert (normalized[0].source, normalized[0].target) == ("小马", "直属领导")
 # ---------------------------------------------------------------------------
 # 小红书 3:4 分页：内容块序列 + 装箱算法 + 页面模板（不含 Edge 渲染）
 # ---------------------------------------------------------------------------
