@@ -144,6 +144,28 @@ def test_injection_uses_latest_successful_report():
     assert "第零步" in suffix
 
 
+def test_injection_for_report_task_allows_title_rewrite():
+    """日报任务（如小红书文案）注入清单：数量顺序对齐，但标题允许自行改写。"""
+    db = _make_db()
+    report = _make_task(db, "漫道日报V2", "report")
+    redbook = _make_task(db, "小红书文案", "report", upstream_task_id=report.id)
+    _make_execution(
+        db,
+        report.id,
+        "success",
+        datetime.now() - timedelta(minutes=10),
+        summary_md=HTML_REPORT,
+    )
+
+    suffix, meta = SchedulerService()._build_upstream_topic_injection(db, redbook)
+
+    assert meta["injected"] is True
+    assert meta["topics"] == ["存钱不靠记账，靠砍支出", "别光给情绪价值，学提问"]
+    assert "存钱不靠记账，靠砍支出" in suffix
+    assert "第零步" not in suffix
+    assert "标题不要求照抄清单" in suffix
+
+
 def test_injection_skips_stale_report():
     db = _make_db()
     report = _make_task(db, "漫道日报V2", "report")
@@ -248,7 +270,7 @@ def test_report_content_mode_loads_topic_content():
     assert meta["topics"][0].startswith("话题1：")
     assert "话题1：工作总背锅" in content
     assert "优化流程" in content
-    assert "深度话题的完整内容" in content
+    assert "话题的完整内容" in content
 
 
 def test_report_content_mode_raises_without_upstream():
@@ -303,11 +325,15 @@ def test_normalize_card_input_source_rules():
     assert _normalize_card_input_source(None, task_type="topic_card", upstream_task_id=1) == "chatlog"
     assert _normalize_card_input_source("report", task_type="topic_card", upstream_task_id=1) == "report"
     assert _normalize_card_input_source("report", task_type="image_card", upstream_task_id=1) == "report"
-    # 纯日报内容必须绑定上游
-    with pytest.raises(ValueError, match="必须绑定上游日报任务"):
+    # 日报任务：同样默认聊天记录、可选纯上游内容（生成→整理两道工序）
+    assert _normalize_card_input_source(None, task_type="report", upstream_task_id=1) == "chatlog"
+    assert _normalize_card_input_source("report", task_type="report", upstream_task_id=1) == "report"
+    # 纯上游内容必须绑定上游
+    with pytest.raises(ValueError, match="必须绑定上游任务"):
         _normalize_card_input_source("report", task_type="topic_card", upstream_task_id=None)
-    # 非卡片任务强制聊天记录
-    assert _normalize_card_input_source("report", task_type="report", upstream_task_id=1) == "chatlog"
+    with pytest.raises(ValueError, match="必须绑定上游任务"):
+        _normalize_card_input_source("report", task_type="report", upstream_task_id=None)
+    # 导出任务强制聊天记录
     assert _normalize_card_input_source("report", task_type="export", upstream_task_id=None) == "chatlog"
     # 非法取值
     with pytest.raises(ValueError, match="不支持"):

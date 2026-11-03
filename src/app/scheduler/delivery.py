@@ -13,6 +13,7 @@ from loguru import logger
 
 from ..integrations import feishu, image_generation
 from ..integrations.security import decrypt_value
+from ..config import get_settings
 from ..models.execution import Execution
 from ..models.job import Job
 from ..models.model import Model
@@ -415,6 +416,17 @@ class DeliveryMixin:
                 relation_prompt_template=relation_prompt_template,
             )
             meta.update(engine_meta)
+            publish_root = (get_settings().html_card_publish_dir or "").strip()
+            if publish_root:
+                try:
+                    published = html_case_card_service.publish_case_cards(
+                        engine_meta.get("cards") or [],
+                        publish_root=Path(publish_root),
+                    )
+                    meta["publish"] = published
+                    logger.info("案例卡已发布到 {}", published["dir"])
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("案例卡发布失败（不影响推送）: {}", exc)
         else:
             # 阶段一：逐块生成图片（任一块彻底失败即抛错终止）
             generated_items: List[Dict[str, Any]] = []
@@ -780,6 +792,17 @@ class DeliveryMixin:
                                     execution_id=getattr(execution, "id", None),
                                 )
                                 meta.setdefault("html_card", html_meta)
+                                publish_root = (get_settings().html_card_publish_dir or "").strip()
+                                if publish_root:
+                                    try:
+                                        published = html_case_card_service.publish_case_cards(
+                                            html_meta.get("cards") or [],
+                                            publish_root=Path(publish_root),
+                                        )
+                                        meta["html_card"]["publish"] = published
+                                        logger.info("案例卡已发布到 {}", published["dir"])
+                                    except Exception as exc:  # noqa: BLE001
+                                        logger.warning("案例卡发布失败（不影响推送）: {}", exc)
                                 rendered_by_engine[cache_key] = [
                                     topic_card_service.RenderedImage(
                                         path=Path(item["path"]),

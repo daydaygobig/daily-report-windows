@@ -103,9 +103,23 @@ def update_task(db: Session, task_id: int, payload: TaskUpdate) -> Task:
     if "topic_style_config" in obj_in:
         obj_in["topic_style_config"] = topic_card_service.normalize_topic_style_config(obj_in["topic_style_config"])
     target_type = obj_in.get("task_type", entity.task_type)
-    if target_type not in ("topic_card", "image_card"):
+    if target_type not in ("report", "topic_card", "image_card"):
         obj_in["upstream_task_id"] = None
         obj_in["card_input_source"] = "chatlog"
+    elif target_type == "report":
+        # 日报任务：上游既可注入话题清单（选题对齐），也可选纯上游内容（初稿→整理两道工序）
+        if "upstream_task_id" in obj_in:
+            obj_in["upstream_task_id"] = _normalize_upstream_task(
+                db,
+                upstream_task_id=obj_in.get("upstream_task_id"),
+                task_type=target_type,
+                self_id=task_id,
+            )
+        obj_in["card_input_source"] = _normalize_card_input_source(
+            obj_in.get("card_input_source"),
+            task_type=target_type,
+            upstream_task_id=obj_in.get("upstream_task_id", entity.upstream_task_id),
+        )
     elif "card_input_source" in obj_in:
         obj_in["card_input_source"] = _normalize_card_input_source(
             obj_in.get("card_input_source"),
@@ -191,8 +205,8 @@ def _normalize_upstream_task(
     """校验上游日报任务配置；0 或 None 表示清除。"""
     if upstream_task_id in (None, 0):
         return None
-    if task_type not in ("topic_card", "image_card"):
-        raise ValueError("只有话题卡片/图片卡片任务可以设置上游日报任务")
+    if task_type not in ("report", "topic_card", "image_card"):
+        raise ValueError("日报、话题卡片、图片卡片任务可以设置上游日报任务")
     if self_id is not None and int(upstream_task_id) == int(self_id):
         raise ValueError("上游日报任务不能是任务本身")
     upstream = task_repo.get(db, int(upstream_task_id))
@@ -209,14 +223,14 @@ def _normalize_card_input_source(
     task_type: str,
     upstream_task_id: Optional[int],
 ) -> str:
-    """卡片任务可选纯日报内容模式（不拉聊天记录）；其余任务一律回落聊天记录模式。"""
-    if task_type not in ("topic_card", "image_card"):
+    """卡片/报告任务可选纯上游内容模式（不拉聊天记录）；导出等任务一律回落聊天记录模式。"""
+    if task_type not in ("report", "topic_card", "image_card"):
         return "chatlog"
     source = (value or "chatlog").strip() or "chatlog"
     if source not in ("chatlog", "report"):
         raise ValueError(f"卡片输入来源不支持：{source}")
     if source == "report" and upstream_task_id in (None, 0):
-        raise ValueError("纯日报内容模式的卡片任务必须绑定上游日报任务")
+        raise ValueError("纯上游内容模式必须绑定上游任务")
     return source
 
 

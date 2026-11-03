@@ -193,8 +193,26 @@ async def generate_image(
                     "已要求代理返回 b64_json，但接口仍只返回图片 URL；"
                     "请确认该代理支持 response_format 参数"
                 )
-            raise ImageGenerationError(
-                "图片模型只返回了图片 URL；请在模型配置中开启“兼容代理接口”后重试"
+            # 兼容只返回图片 URL 的接口：直接下载图片内容
+            image_url = str(item["url"])
+            try:
+                async with httpx.AsyncClient(timeout=request_timeout) as client:
+                    download = await client.get(image_url)
+                    download.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise ImageGenerationError(f"下载图片 URL 失败: {exc}") from exc
+            url_bytes = download.content
+            if not url_bytes:
+                raise ImageGenerationError("图片 URL 下载内容为空")
+            url_mime = (download.headers.get("Content-Type") or "image/png").split(";", 1)[0] or "image/png"
+            return GeneratedImage(
+                content=url_bytes,
+                mime_type=url_mime,
+                revised_prompt=(
+                    item.get("revised_prompt")
+                    if isinstance(item.get("revised_prompt"), str)
+                    else None
+                ),
             )
         raise ImageGenerationError("图片模型没有返回 b64_json 图片数据")
     mime_type = "image/png"

@@ -26,7 +26,7 @@ import tempfile
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -2287,6 +2287,52 @@ async def render_case_cards(
                 "python scripts/render_html_card.py render <card.html 所在目录>",
     }
     return generated_items, final_images, meta
+
+
+def publish_case_cards(cards: list[dict[str, Any]], *, publish_root: Path,
+                      date_dir: str = "") -> dict[str, Any]:
+    """把渲染好的整卡与小红书分页发布到素材库目录。
+
+    目标结构：<publish_root>/<date_dir>/<卡序号>.png + 小红书分页/<卡序号>/<页码>.png + 小红书分页.zip。
+    date_dir 为空时按昨天日期命名（早上出卡用的是前一天群聊内容）。
+    cards 为 render_case_cards_as_files 返回的 meta["cards"] 条目。
+    """
+    import zipfile
+
+    date_dir = (date_dir or "").strip() or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    out_dir = Path(publish_root) / date_dir
+    pages_root = out_dir / "小红书分页"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    published: list[dict[str, Any]] = []
+    for card in cards:
+        index = int(card.get("index") or 0)
+        if not index or not card.get("png_path"):
+            continue
+        shutil.copyfile(card["png_path"], out_dir / f"{index}.png")
+        page_files: list[str] = []
+        pages_dir = str(card.get("pages_dir") or "").strip()
+        if pages_dir and Path(pages_dir).is_dir():
+            target = pages_root / str(index)
+            target.mkdir(parents=True, exist_ok=True)
+            for src in sorted(Path(pages_dir).glob("*.png")):
+                # page_01.png / 1.png 统一发布成纯页码命名（1.png），与历史目录一致
+                digits = re.sub(r"\D", "", src.stem)
+                dest = target / f"{int(digits) if digits else 0}.png"
+                shutil.copyfile(src, dest)
+                page_files.append(str(dest))
+        published.append({
+            "index": index,
+            "title": card.get("title", ""),
+            "png": str(out_dir / f"{index}.png"),
+            "pages": page_files,
+        })
+    zip_path = out_dir / "小红书分页.zip"
+    if pages_root.is_dir():
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for png in sorted(pages_root.rglob("*.png")):
+                zf.write(png, png.relative_to(out_dir))
+    logger.info("案例卡已发布 dir={} 长卡={} zip={}", out_dir, len(published), zip_path.name)
+    return {"dir": str(out_dir), "cards": published}
 
 
 async def render_case_cards_as_files(

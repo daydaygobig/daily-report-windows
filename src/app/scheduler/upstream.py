@@ -17,7 +17,7 @@ from .common import (
 )
 
 class UpstreamMixin:
-    """卡片任务的纯日报内容模式与上游话题清单注入。"""
+    """上游日报能力：卡片任务的纯日报内容模式，以及话题清单注入（卡片与日报任务通用）。"""
 
     def _load_upstream_report_content(self, db, task: Task) -> Tuple[str, Dict[str, Any]]:
         """纯日报内容模式：载入上游日报最近一次成功执行的话题全文，作为卡片任务的 LLM 输入。
@@ -50,6 +50,26 @@ class UpstreamMixin:
                 f"上游日报任务「{upstream_task.name}」最近一次成功日报已超过 {UPSTREAM_MAX_AGE_HOURS} 小时，"
                 "纯日报内容模式拒绝执行"
             )
+        finished_text = finished_at.isoformat(sep=" ", timespec="minutes") if finished_at else ""
+        if (getattr(task, "task_type", "") or "") == "report":
+            # 报告任务（初稿→整理两道工序）：直接使用上游最近一次成功输出的完整内容
+            content_full = (execution.summary_md or "").strip()
+            if not content_full:
+                raise ValueError(f"上游任务「{upstream_task.name}」最近一次成功输出为空")
+            content = (
+                f"以下是上游任务「{upstream_task.name}」（生成于 {finished_text}）的完整输出，"
+                "请在本任务中直接作为输入内容使用。\n\n" + content_full
+            )
+            meta = {
+                "mode": "report_content",
+                "upstream_task_id": int(upstream_id),
+                "upstream_execution_id": execution.id,
+                "upstream_finished_at": finished_at.isoformat(sep=" ", timespec="minutes") if finished_at else None,
+                "injected": True,
+                "topics": [],
+                "topic_count": 0,
+            }
+            return content, meta
         sections = _extract_report_topic_sections(execution.summary_md or "")[:UPSTREAM_MAX_TOPICS]
         if not sections:
             raise ValueError(f"未能从上游日报任务「{upstream_task.name}」的输出中提取到话题内容")
@@ -60,10 +80,9 @@ class UpstreamMixin:
                 blocks.append(f"### 话题{index}：{section['title']}\n{body}")
             else:
                 blocks.append(f"### 话题{index}：{section['title']}")
-        finished_text = finished_at.isoformat(sep=" ", timespec="minutes") if finished_at else ""
         content = (
             f"以下是漫道日报（任务「{upstream_task.name}」，生成于 {finished_text}）中 "
-            f"{len(sections)} 个深度话题的完整内容，按日报中的顺序排列。\n\n" + "\n\n".join(blocks)
+            f"{len(sections)} 个话题的完整内容，按日报中的顺序排列。\n\n" + "\n\n".join(blocks)
         )
         meta = {
             "mode": "report_content",
@@ -80,10 +99,8 @@ class UpstreamMixin:
         """查询上游日报任务最近一次成功执行，产出话题清单提示词后缀与元信息。
 
         返回 (suffix, meta)：查不到合格上游时 suffix 为空串、meta 记录原因，
-        卡片任务随之自然回退为提示词中的「自行选题」分支。
+        任务随之自然回退为提示词中的「自行选题」分支。
         """
-        if getattr(task, "task_type", "report") not in ("topic_card", "image_card"):
-            return "", None
         upstream_id = getattr(task, "upstream_task_id", None)
         if not upstream_id:
             return "", None
@@ -118,13 +135,23 @@ class UpstreamMixin:
             return "", meta
         meta.update({"injected": True, "topics": titles, "topic_count": len(titles)})
         numbered = "\n".join(f"{index}. {title}" for index, title in enumerate(titles, start=1))
+        if (getattr(task, "task_type", "report") or "report") == "report":
+            # 日报任务（如小红书文案）：清单只约束选题范围与顺序，标题允许自行改写
+            enforcement = (
+                "本次文案选题必须与该清单一一对应：话题数量、顺序完全一致，"
+                "不得增删、合并、拆分或另选话题；标题不要求照抄清单，可按本任务提示词自行改写。"
+            )
+        else:
+            enforcement = (
+                "本次必须按上方「第零步」执行：案例卡片与该清单一一对应，"
+                "话题数量、顺序、标题完全一致，不得增删、合并、拆分或另选话题。"
+            )
         suffix = (
             "\n\n## 日报话题清单（系统自动注入，本次视为「已提供日报话题清单」）\n\n"
             f"来源：任务「{upstream_task.name}」于 {meta['upstream_finished_at']} 成功生成的漫道日报，"
             f"共 {len(titles)} 个深度话题，按日报中的顺序排列：\n"
             f"{numbered}\n\n"
-            "本次必须按上方「第零步」执行：案例卡片与该清单一一对应，"
-            "话题数量、顺序、标题完全一致，不得增删、合并、拆分或另选话题。"
+            f"{enforcement}"
         )
         return suffix, meta
 

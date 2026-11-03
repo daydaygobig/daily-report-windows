@@ -85,9 +85,14 @@ async def test_generate_image_decodes_b64(monkeypatch):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_generate_image_rejects_url_only_response(monkeypatch):
+async def test_generate_image_downloads_url_only_response(monkeypatch):
     endpoint = "https://example.com/v1/images/generations"
-    respx.post(endpoint).mock(return_value=Response(200, json={"data": [{"url": "https://example.com/image.png"}]}))
+    image_url = "https://example.com/image.png"
+    image_bytes = b"small-png"
+    respx.post(endpoint).mock(return_value=Response(200, json={"data": [{"url": image_url}]}))
+    respx.get(image_url).mock(
+        return_value=Response(200, content=image_bytes, headers={"Content-Type": "image/png"})
+    )
     monkeypatch.setattr(image_generation, "decrypt_value", lambda _: "secret")
     model = SimpleNamespace(
         provider="gpt-image-2",
@@ -96,8 +101,10 @@ async def test_generate_image_rejects_url_only_response(monkeypatch):
         extra=None,
     )
 
-    with pytest.raises(image_generation.ImageGenerationError, match="只返回了图片 URL"):
-        await image_generation.generate_image(model, prompt="test")
+    result = await image_generation.generate_image(model, prompt="test")
+
+    assert result.content == image_bytes
+    assert result.mime_type == "image/png"
 
 
 @pytest.mark.asyncio

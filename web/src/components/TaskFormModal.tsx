@@ -99,6 +99,7 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
   const taskType = Form.useWatch("task_type", form) ?? "report";
   const cardInputSource = Form.useWatch("card_input_source", form) ?? "chatlog";
   const isExportTask = taskType === "export";
+  const isReportTask = taskType === "report";
   const isTopicCardTask = taskType === "topic_card";
   const isImageCardTask = taskType === "image_card";
 
@@ -309,8 +310,12 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
       message.error("请至少选择一个图片模型");
       return;
     }
-    if ((isTopicCardTask || isImageCardTask) && values.card_input_source === "report" && !values.upstream_task_id) {
-      message.error("纯日报内容模式必须选择上游日报任务");
+    if (
+      (isTopicCardTask || isImageCardTask || isReportTask) &&
+      values.card_input_source === "report" &&
+      !values.upstream_task_id
+    ) {
+      message.error("纯上游内容模式必须选择上游任务");
       return;
     }
     const optionMap = new Map(chatroomOptions.map((item) => [item.value, item.label]));
@@ -341,8 +346,8 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
               max_attempts: Math.max(Number(item.max_attempts || 2), 1)
             })),
       prompt_template_id: isExportTask ? null : selectedTemplateId,
-      upstream_task_id: isTopicCardTask || isImageCardTask ? (values.upstream_task_id ?? 0) : null,
-      card_input_source: isTopicCardTask || isImageCardTask ? values.card_input_source : undefined,
+      upstream_task_id: isTopicCardTask || isImageCardTask || isReportTask ? (values.upstream_task_id ?? 0) : null,
+      card_input_source: isTopicCardTask || isImageCardTask || isReportTask ? values.card_input_source : undefined,
       talkers: talkerPairs.map((item) => item.id),
       talker_names: talkerPairs.map((item) => item.name),
       push_webhook_ids: isExportTask ? [] : values.push_webhook_ids ?? [],
@@ -393,11 +398,15 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
             ]}
           />
         </Form.Item>
-        {isTopicCardTask || isImageCardTask ? (
+        {isTopicCardTask || isImageCardTask || isReportTask ? (
           <Form.Item
             label="上游日报任务"
             name="upstream_task_id"
-            tooltip="选择日报任务后，本任务每次执行会自动关联该日报最近一次成功生成的结果；若日报尚未生成成功或已超过 24 小时：聊天记录模式自动回退为自行选题，纯日报内容模式直接报错。"
+            tooltip={
+              isReportTask
+                ? "选择日报任务后，本任务执行时会自动把该日报最近一次成功生成的话题标题清单注入提示词：文案选题与日报一一对应（数量、顺序一致，标题可自行改写）。若日报尚未生成成功或已超过 24 小时，自动回退为自行选题。"
+                : "选择日报任务后，本任务每次执行会自动关联该日报最近一次成功生成的结果；若日报尚未生成成功或已超过 24 小时：聊天记录模式自动回退为自行选题，纯日报内容模式直接报错。"
+            }
           >
             <Select
               options={[
@@ -410,17 +419,28 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
             />
           </Form.Item>
         ) : null}
-        {isTopicCardTask || isImageCardTask ? (
+        {isTopicCardTask || isImageCardTask || isReportTask ? (
           <Form.Item
-            label="卡片输入来源"
+            label={isReportTask ? "输入来源" : "卡片输入来源"}
             name="card_input_source"
-            tooltip="聊天记录：拉取群聊记录作为模型输入（默认，行为与旧版一致）。纯日报内容：不拉聊天记录，直接使用上游日报中每个深度话题的完整内容（背景/讨论/解决方案/金句）作为模型输入，日报缺失或超期时任务直接报错。"
+            tooltip={
+              isReportTask
+                ? "聊天记录：拉取群聊记录作为模型输入（默认）。纯上游内容：不拉聊天记录，直接使用上游任务最近一次成功输出的完整内容作为模型输入（适合「初稿→整理」两道工序），上游缺失或超过 24 小时时任务直接报错。"
+                : "聊天记录：拉取群聊记录作为模型输入（默认，行为与旧版一致）。纯日报内容：不拉聊天记录，直接使用上游日报中每个深度话题的完整内容（背景/讨论/解决方案/金句）作为模型输入，日报缺失或超期时任务直接报错。"
+            }
           >
             <Select
-              options={[
-                { label: "聊天记录（拉取群聊记录生成卡片）", value: "chatlog" },
-                { label: "纯日报内容（使用上游日报话题内容，不拉聊天记录）", value: "report" }
-              ]}
+              options={
+                isReportTask
+                  ? [
+                      { label: "聊天记录（拉取群聊记录，默认）", value: "chatlog" },
+                      { label: "纯上游内容（使用上游任务的输出，不拉聊天记录）", value: "report" }
+                    ]
+                  : [
+                      { label: "聊天记录（拉取群聊记录生成卡片）", value: "chatlog" },
+                      { label: "纯日报内容（使用上游日报话题内容，不拉聊天记录）", value: "report" }
+                    ]
+              }
             />
           </Form.Item>
         ) : null}
@@ -429,9 +449,19 @@ function TaskFormModal({ open, initialValues, confirmLoading, onCancel, onSubmit
             当前为聊天记录模式：若上方选择了上游日报任务，会把日报的话题标题清单注入提示词，卡片话题与日报一一对应。
           </Typography.Paragraph>
         ) : null}
+        {isReportTask && cardInputSource === "chatlog" ? (
+          <Typography.Paragraph type="secondary" style={{ marginTop: -8, marginBottom: 16 }}>
+            当前为聊天记录模式：若上方选择了上游日报任务，会把日报的话题标题清单注入提示词，文案选题与日报一一对应。
+          </Typography.Paragraph>
+        ) : null}
         {(isTopicCardTask || isImageCardTask) && cardInputSource === "report" ? (
           <Typography.Paragraph type="secondary" style={{ marginTop: -8, marginBottom: 16 }}>
             当前为纯日报内容模式：建议搭配「日报话题案例卡（纯日报内容）」提示词模板使用。
+          </Typography.Paragraph>
+        ) : null}
+        {isReportTask && cardInputSource === "report" ? (
+          <Typography.Paragraph type="secondary" style={{ marginTop: -8, marginBottom: 16 }}>
+            当前为纯上游内容模式：直接整理上游任务最近一次的输出，适合「生成初稿 → 文字整理」两道工序；上游任务没跑或超过 24 小时会报错。
           </Typography.Paragraph>
         ) : null}
         {isTopicCardTask ? (
