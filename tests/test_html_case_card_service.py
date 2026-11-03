@@ -391,14 +391,17 @@ def test_build_page_units_module_order():
     units = svc._build_page_units(cards[0], avatar_file="../assets/avatar.png",
                                   qr_file="../assets/qr.png")
     keys = [u.key for u in units]
-    assert keys[0] == "bg" and units[0].starts_module
-    assert "rel" in keys and "ana" in keys and "sol" in keys
+    assert keys[0] == "bg_facts"
+    assert "bg_scenes" in keys and "rel" in keys and "ana" in keys and "sol" in keys
     assert keys[-1] == "tail"
     tail = next(u for u in units if u.key == "tail")
     assert tail.force_new_page and tail.starts_module
-    # 背景整模块一页：事实 + 场景 + 提问黑条同块
+    # 背景拆两页：瑞士事实格页（大序号头+当事人行+决策格+冲突点反色格）
     bg = units[0]
-    assert "facts-avatar" in bg.html and "scenes" in bg.html and "question-band" in bg.html
+    assert "sw-head" in bg.html and "bg-idrow" in bg.html and "bg-grid" in bg.html
+    # 事情线页：黑头条 + 时间线 + 橙色问句
+    bg2 = next(u for u in units if u.key == "bg_scenes")
+    assert "bg-listhead" in bg2.html and "bg-rail" in bg2.html and "bg-ask" in bg2.html
     # 尾页页脚无二维码（小红书不允许上传二维码）
     assert 'class="qr-box"' not in tail.html and "cta" in tail.html
     ana = next(u for u in units if u.key == "ana")

@@ -75,6 +75,7 @@ class CaseCard:
     keywords: list[str] = field(default_factory=list)
     gender: str = "男"
     facts: list[tuple[str, str]] = field(default_factory=list)      # (标签, 内容)
+    stake: str = ""                                                 # 冲突点（背景概述末行两难定性问句）
     scenes: list[str] = field(default_factory=list)
     question: str = ""
     relations: list[RelationEdge] = field(default_factory=list)
@@ -89,6 +90,7 @@ class CaseCard:
             "title": self.title, "subtitle": self.subtitle, "keywords": self.keywords,
             "gender": self.gender,
             "facts": [list(item) for item in self.facts],
+            "stake": self.stake,
             "scenes": self.scenes, "question": self.question,
             "relations": [
                 {"source": r.source, "verb": r.verb, "target": r.target, "why": r.why}
@@ -107,6 +109,7 @@ class CaseCard:
             title=data.get("title", ""), subtitle=data.get("subtitle", ""),
             keywords=list(data.get("keywords", [])), gender=data.get("gender", "男"),
             facts=[(str(a), str(b)) for a, b in data.get("facts", [])],
+            stake=str(data.get("stake", "") or ""),
             scenes=list(data.get("scenes", [])), question=data.get("question", ""),
             relations=[
                 RelationEdge(r.get("source", ""), r.get("verb", ""), r.get("target", ""), r.get("why", ""))
@@ -238,7 +241,11 @@ def _parse_one_card(top_text: str, bottom_text: str) -> CaseCard:
             continue
         match = _RE_FACT.match(line)
         if match:
-            card.facts.append((match.group(1).strip(), match.group(2).strip()))
+            label = match.group(1).strip()
+            if label == "冲突点":
+                card.stake = match.group(2).strip()
+            else:
+                card.facts.append((label, match.group(2).strip()))
         elif line.endswith("？") or line.endswith("?"):
             card.question = line
         else:
@@ -930,6 +937,11 @@ def _person_brief(facts: list[tuple[str, str]]) -> str:
     return " · ".join(picked) or "当事人"
 
 
+def _ip_name(gender: str) -> str:
+    """当事人 IP 角色名：女=小牛，男=小马（背景身份行与关系图中心节点共用）。"""
+    return "小牛" if (gender or "").strip() == "女" else "小马"
+
+
 def _split_title(title: str) -> tuple[str, str]:
     """长标题拆两行：优先在首个逗号/问号后断开，否则按长度对半。"""
     text = (title or "").strip()
@@ -991,6 +1003,50 @@ def _card_css() -> str:
   .mod-head .zh {{ font-size:46px; font-weight:900; letter-spacing:3px; }}
   .mod-head .en {{ font-size:36px; color:#A39A8C; letter-spacing:4px; font-weight:700; }}
   .mod-head .line {{ flex:1; border-top:2px solid #1A1A1A; }}
+  /* 背景概述·瑞士网格版式：粗黑分隔线表格 + 橙块面强调，无圆角无卡片。
+     正文字号对齐其他模块（分析/方案正文 46px）：cv/wv 44、时间线 44、问句 48 */
+  .sw-head {{ display:flex; align-items:baseline; gap:24px; border-bottom:10px solid #1A1A1A;
+    padding-bottom:12px; }}
+  .sw-head .num {{ font-size:76px; font-weight:900; color:#E8590C; line-height:.9;
+    font-family:Georgia,"STZhongsong","SimSun",serif; }}
+  .sw-head .ht {{ font-size:46px; font-weight:900; letter-spacing:6px; }}
+  .sw-head .he {{ margin-left:auto; font-size:28px; letter-spacing:6px; color:#6B655C;
+    font-weight:700; align-self:center; }}
+  .bg-idrow {{ display:flex; border-bottom:3px solid #1A1A1A; }}
+  .bg-idrow .photo {{ flex:none; width:210px; padding:14px; border-right:3px solid #1A1A1A;
+    display:flex; align-items:center; justify-content:center; }}
+  .bg-idrow .photo img {{ width:150px; height:150px; object-fit:cover; }}
+  .bg-idrow .who {{ flex:1; padding:16px 26px; }}
+  .bg-idrow .wk {{ font-size:32px; font-weight:900; color:#E8590C; letter-spacing:6px; }}
+  .bg-idrow .wv {{ font-size:44px; font-weight:800; line-height:1.4; margin-top:8px;
+    text-wrap:balance; }}
+  .bg-grid {{ display:grid; grid-template-columns:1fr 1fr; border-bottom:3px solid #1A1A1A; }}
+  .bg-cell {{ padding:14px 24px; }}
+  .bg-cell:nth-child(odd) {{ border-right:3px solid #1A1A1A; }}
+  .bg-cell:nth-child(1), .bg-cell:nth-child(2) {{ border-bottom:3px solid #1A1A1A; }}
+  .bg-cell .ck {{ font-size:32px; font-weight:900; color:#E8590C; letter-spacing:5px; }}
+  .bg-cell .cv {{ font-size:42px; font-weight:600; line-height:1.4; margin-top:8px;
+    text-wrap:balance; }}
+  .bg-cell.stake {{ background:#1A1A1A; }}
+  .bg-cell.stake .ck {{ color:#F3C4A6; }}
+  .bg-cell.stake .cv {{ color:#FFF; font-weight:800; }}
+  .bg-listhead {{ display:flex; align-items:center; justify-content:space-between;
+    background:#1A1A1A; color:#FFF; padding:12px 26px; }}
+  .bg-listhead .lt {{ font-size:38px; font-weight:900; letter-spacing:8px; }}
+  .bg-listhead .le {{ font-size:24px; color:#F3C4A6; letter-spacing:4px; font-weight:700; }}
+  .bg-rail {{ position:relative; padding-left:132px; margin-top:8px; }}
+  .bg-rail::before {{ content:""; position:absolute; left:70px; top:30px; bottom:26px;
+    width:4px; background:#1A1A1A; }}
+  .bg-step {{ position:relative; padding:0 0 14px; }}
+  .bg-step:last-child {{ padding-bottom:4px; }}
+  .bg-step .sn {{ position:absolute; left:-132px; top:-4px; width:132px; text-align:center; }}
+  .bg-step .n {{ font-size:56px; font-weight:900; color:#E8590C; line-height:1;
+    font-family:Georgia,"SimSun",serif; display:block; }}
+  .bg-step .st {{ font-size:44px; font-weight:500; line-height:1.45; text-wrap:balance;
+    padding-top:2px; }}
+  .bg-ask {{ margin-top:18px; background:#E8590C; color:#1A1A1A; padding:20px 28px;
+    font-size:48px; font-weight:900; line-height:1.45; border-left:14px solid #1A1A1A;
+    text-wrap:balance; }}
   .facts-avatar {{ display:flex; gap:32px; }}
   .avatar-box {{ flex:none; text-align:center; width:250px; }}
   .avatar-box img {{ width:220px; height:220px; border-radius:50%; object-fit:cover;
@@ -1095,10 +1151,52 @@ def _scene_items_html(card: CaseCard) -> str:
     return "\n".join(f'<div class="scene">{_esc(s)}</div>' for s in card.scenes)
 
 
+def _bg_swiss_head_html() -> str:
+    """背景概述的瑞士风模块头：大号衬线序号 + 粗黑底线（区别于其他模块的通用头）。"""
+    return ('    <div class="sw-head"><span class="num">02</span>'
+            '<span class="ht">背景概述</span><span class="he">BACKGROUND</span></div>')
+
+
+def _facts_grid_html(card: CaseCard, avatar_file: str = "") -> str:
+    """背景概述事实区（瑞士网格版式）：当事人身份行 + 决策维度格 + 冲突点反色格。"""
+    person_v = ""
+    rest: list[tuple[str, str]] = []
+    for k, v in card.facts:
+        if k == "当事人" and not person_v:
+            person_v = v
+        else:
+            rest.append((k, v))
+    # 旧数据兼容：facts 里带「冲突点」而 stake 为空时，提出来走反色格
+    if not card.stake:
+        for index, (k, v) in enumerate(rest):
+            if k == "冲突点":
+                card.stake = v
+                rest.pop(index)
+                break
+    if not person_v:
+        person_v = _person_brief(card.facts)
+    avatar_img = f'<img src="{_esc(avatar_file)}" alt="当事人头像">' if avatar_file else ""
+    cells = [f'<div class="bg-cell"><div class="ck">{_esc(k)}</div><div class="cv">{_esc(v)}</div></div>'
+             for k, v in rest]
+    if card.stake:
+        cells.append('<div class="bg-cell stake"><div class="ck">冲突点</div>'
+                     f'<div class="cv">{_esc(card.stake)}</div></div>')
+    return ('    <div class="bg-idrow"><div class="photo">' + avatar_img + '</div>'
+            '<div class="who"><div class="wk">' + _esc(_ip_name(card.gender)) + '</div>'
+            f'<div class="wv">{_esc(person_v)}</div></div></div>\n'
+            '    <div class="bg-grid">\n' + "\n".join(cells) + '\n    </div>')
+
+
 def _scenes_block_html(card: CaseCard) -> str:
-    return f"""    <div class="scenes">
-{_scene_items_html(card)}
-    </div>"""
+    """场景叙述（瑞士网格版式）：一句一节拍，「事情是这样的」黑头条 + 大号衬线序号时间线。"""
+    scenes = [s.strip() for s in card.scenes if s and s.strip()]
+    steps = "\n".join(
+        f'      <div class="bg-step"><div class="sn"><span class="n">{i}</span></div>'
+        f'<div class="st">{_esc(scene)}</div></div>'
+        for i, scene in enumerate(scenes, start=1))
+    return ('    <div class="bg-listhead"><span class="lt">事情是这样的</span>'
+            '<span class="le">WHAT HAPPENED</span></div>\n'
+            f'    <div class="bg-rail">\n{steps}\n    </div>')
 
 
 def _chips_html(card: CaseCard) -> str:
@@ -1107,7 +1205,7 @@ def _chips_html(card: CaseCard) -> str:
 
 
 def _question_html(question: str) -> str:
-    return f'<div class="question-band serif">{_esc(question)}</div>'
+    return f'<div class="bg-ask serif">{_esc(question.replace("?", "？"))}</div>'
 
 
 def _rel_sum_html(summary: str) -> str:
@@ -1191,8 +1289,8 @@ def build_card_html(card: CaseCard, *, avatar_file: str, qr_file: str,
 
     title_l1, title_l2 = _split_title(card.title)
     masthead_html = _masthead_html(brand)
-    facts_avatar_html = _facts_avatar_html(card, avatar_file)
-    scenes_html = _scene_items_html(card)
+    facts_avatar_html = _bg_swiss_head_html() + "\n" + _facts_grid_html(card, avatar_file)
+    scenes_html = _scenes_block_html(card)
     chips_html = _chips_html(card)
     analysis_html = "\n".join(
         _analysis_item_html(i, tag, txt) for i, (tag, txt) in enumerate(card.analysis))
@@ -1229,11 +1327,8 @@ def build_card_html(card: CaseCard, *, avatar_file: str, qr_file: str,
   </div>
   <div class="chips">{chips_html}</div>
   <div class="mod">
-    <div class="mod-head"><span class="sq"></span><span class="zh">背景概述</span><span class="en">BACKGROUND</span><span class="line"></span></div>
 {facts_avatar_html}
-    <div class="scenes">
 {scenes_html}
-    </div>
 {question_block}
   </div>
 {relation_block}
@@ -1495,17 +1590,19 @@ def _build_page_units(card: CaseCard, *, avatar_file: str = "", qr_file: str = "
     diagram_html, _canvas_h = _build_diagram_html(diagram, avatar_file)
 
     units: list[PageUnit] = []
-    if card.facts or avatar_file or card.scenes or card.question:
-        # 背景整模块一页：事实 + 场景 + 提问黑条（放不下时整体缩放，不跨页）
-        bg_parts: list[str] = []
-        if card.facts or avatar_file:
-            bg_parts.append(_facts_avatar_html(card, avatar_file))
+    if card.facts or avatar_file:
+        # 背景第一页：瑞士大序号头 + 当事人行 + 事实格（含冲突点反色格），swiss 头自带、不加通用模块头
+        units.append(PageUnit("bg_facts",
+                              _bg_swiss_head_html() + "\n" + _facts_grid_html(card, avatar_file),
+                              "bg_facts"))
+    if card.scenes or card.question:
+        # 背景第二页：事情是这样的（黑头条+时间线）+ 橙色问句
+        bg2_parts: list[str] = []
         if card.scenes:
-            bg_parts.append(_scenes_block_html(card))
+            bg2_parts.append(_scenes_block_html(card))
         if card.question:
-            bg_parts.append(_question_html(card.question))
-        units.append(PageUnit("bg", "\n".join(bg_parts),
-                              "bg", head_zh="背景概述", head_en="BACKGROUND", starts_module=True))
+            bg2_parts.append(_question_html(card.question))
+        units.append(PageUnit("bg_scenes", "\n".join(bg2_parts), "bg_scenes"))
     if diagram_html:
         # 关系图与「整体结构」摘要同一页：图不带摘要显得残缺，摘要单独成页近乎空页
         rel_inner = '<div class="dg-panel">' + diagram_html + '</div>'
