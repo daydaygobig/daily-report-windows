@@ -145,6 +145,8 @@ _SECTION_HEADERS = ("关键词：", "关键词:", "背景概述：", "背景概�
 _RE_IP_ROLE = re.compile(r"^IP角色[:：]\s*(男|女)")
 _RE_FACT = re.compile(r"^([^｜|]{1,12})[｜|](.+)$")
 _RE_NUMBERED = re.compile(r"^\d+\s*[、.．]\s*[『「'\"]?(.+?)[』」'\"]?\s*[:：]\s*(.+)$")
+# 金句署名的「光名字」行：≤12 字、不含标点（可带 @ 前缀），如 张三 / @李四 / 王二麻子
+_RE_BARE_SIG = re.compile(r"^@?[\u4e00-\u9fa5A-Za-z0-9·•]{1,12}$")
 _RE_EDGE_FWD = re.compile(
     r"^(?P<a>.+?)\s*[-—–]{1,4}\s*[（(](?P<v>.+?)[)）]\s*(?:->|→|⟶|-{0,3}>)\s*(?P<b>.+?)\s*(?:[:：](?P<w>.+))?$"
 )
@@ -299,6 +301,13 @@ def _parse_one_card(top_text: str, bottom_text: str) -> CaseCard:
         sig = ""
         if i + 1 < len(quote_lines) and re.match(r"^[—\-–]{1,4}\s*", quote_lines[i + 1]):
             sig = re.sub(r"^[—\-–]{1,4}\s*", "", quote_lines[i + 1]).strip()
+            i += 2
+        elif (i + 1 < len(quote_lines)
+              and _RE_BARE_SIG.match(quote_lines[i + 1])
+              and not _RE_BARE_SIG.match(quote)):
+            # 模型漏写「—— @」前缀、只留光名字（如 张三/李四），同样按署名配对
+            sig = quote_lines[i + 1].strip().lstrip("@").strip()
+            sig = f"@{sig}" if sig else ""
             i += 2
         else:
             i += 1

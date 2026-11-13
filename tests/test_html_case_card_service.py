@@ -395,8 +395,13 @@ def test_build_page_units_module_order():
     assert keys[0] == "bg_facts"
     assert "bg_scenes" in keys and "rel" in keys and "ana" in keys and "sol" in keys
     assert keys[-1] == "tail"
+    # 金句逐条成块：单页放不下时允许跨页（补「续」头），页脚跟随最后一条金句
+    quo_units = [u for u in units if u.key == "quo"]
+    assert len(quo_units) == len(cards[0].quotes) >= 1
+    assert quo_units[0].force_new_page and quo_units[0].starts_module
+    assert all(not u.force_new_page for u in quo_units[1:])
     tail = next(u for u in units if u.key == "tail")
-    assert tail.force_new_page and tail.starts_module
+    assert not tail.force_new_page and tail.module == "end"
     # 背景拆两页：瑞士事实格页（大序号头+当事人行+决策格+冲突点反色格）
     bg = units[0]
     assert "sw-head" in bg.html and "bg-idrow" in bg.html and "bg-grid" in bg.html
@@ -409,11 +414,11 @@ def test_build_page_units_module_order():
     assert "ana-list" in ana.html and ana.html.count('<div class="item">') == 2
     sol = next(u for u in units if u.key == "sol")
     assert "sol-panel" in sol.html and sol.html.count('<div class="item">') == 2
-    assert "quote" in tail.html
+    assert "quote" in quo_units[0].html
 
 
 def test_module_units_never_split_across_pages():
-    """分析/方案/金句+页脚为整模块块：放不下就整块缩放，绝不跨页。"""
+    """分析/方案为整模块块：放不下就整块缩放，绝不跨页。"""
     units = [
         _mk_unit("bg", "bg", 300, starts_module=True),
         _mk_unit("ana", "ana", 2000, starts_module=True),
@@ -462,3 +467,127 @@ def test_find_marker_rows_on_synthetic_image():
             for x in range(200):
                 img.putpixel((x, y), (255, 0, 255))
     assert svc._find_marker_rows(img) == [50, 200]
+
+
+def _wrap_block(body: str) -> list[str]:
+    return ["<!-- CONTENT_BLOCK_START -->\n" + body + "\n<!-- CONTENT_BLOCK_END -->"]
+
+
+def test_多行金句按空行分段解析():
+    body = (
+        "IP角色：男\n"
+        "四步法卡片\n"
+        "副标题占位\n"
+        "关键词：晋升逻辑\n"
+        "\n"
+        "背景概述：\n"
+        "当事人｜测试\n"
+        "\n"
+        "场景正文第一段。\n"
+        "\n"
+        "引导问句？\n"
+        "\n"
+        "分析过程：\n"
+        "1、「一」：第一条\n"
+        "\n"
+        "解决方案：\n"
+        "1、「做」：第一动作\n"
+        "\n"
+        "金句：\n"
+        "0、我要升职加薪\n"
+        "1、研究已经升职加薪的人是如何做到的\n"
+        "2、发现主要是人说了算，但要有事支撑\n"
+        "3、找到说了算的人，让他支持我，把我调到正事上\n"
+        "4、做成正事，完成他的要求，让他给我升职加薪\n"
+        "\n"
+        "重点不是4，而是3\n"
+        "\n"
+        "如果不先做好3，那么做再多4，可能也没用\n"
+        "\n"
+        "要想真的相信这套方法论，先得从1开始，或者从0开始。"
+    )
+    card = svc.parse_case_blocks(_wrap_block(body))[0]
+    model_text = ("0、我要升职加薪\n1、研究已经升职加薪的人是如何做到的\n"
+                  "2、发现主要是人说了算，但要有事支撑\n"
+                  "3、找到说了算的人，让他支持我，把我调到正事上\n"
+                  "4、做成正事，完成他的要求，让他给我升职加薪")
+    assert card.quotes[0] == (model_text, "")
+    assert card.quotes[1] == ("重点不是4，而是3", "")
+    assert card.quotes[2] == ("如果不先做好3，那么做再多4，可能也没用", "")
+    assert card.quotes[3] == ("要想真的相信这套方法论，先得从1开始，或者从0开始。", "")
+
+
+def test_单行金句加署名解析保持兼容():
+    card = svc.parse_case_blocks(_sample_blocks())[0]
+    assert card.quotes == [("天不会塌，收起你该死的超额责任心。", "@李四")]
+
+
+def test_金句渲染多行br且空署名不渲染():
+    html = svc._quote_html("第一行\n第二行", "")
+    assert "<br>" in html
+    assert '<div class="sig">' not in html
+    html_sig = svc._quote_html("观点", "@张三")
+    assert "—— @张三" in html_sig
+
+
+def test_金句超高时跨页而非缩放():
+    units = [
+        svc.PageUnit("quo", '<div class="quote">q1</div>', "quo", head_zh="金句",
+                     head_en="QUOTES", starts_module=True, force_new_page=True),
+        svc.PageUnit("quo", '<div class="quote">q2</div>', "quo", head_zh="金句",
+                     head_en="QUOTES"),
+        svc.PageUnit("tail", '<div class="cta">c</div>', "end", head_zh=None),
+    ]
+    units[0].height = 1100
+    units[1].height = 500
+    units[2].height = 300
+    pages = svc._pack_units(units, content_h=1200, header_fresh_h=90, header_cont_h=90)
+    keys = [[e["unit"].key for e in page] for page in pages]
+    assert keys == [["quo"], ["quo", "tail"]]      # 金句续页（补「续」头）+ 页脚同页
+    assert all(e["scale"] == 1.0 for page in pages for e in page)  # 不缩放
+    assert pages[1][0]["header"] == "cont"          # 跨页补「续」头
+
+
+def test_publish_case_cards_clears_stale_pages(tmp_path):
+    """重发布同序号时清空旧分页；未覆盖的历史序号保留并告警。"""
+    # 预置历史产物：卡1 有 3 页、卡2 有 2 页（模拟上次运行页数更多的情况）
+    out_dir = tmp_path / "2026-11-04"
+    pages_root = out_dir / "小红书分页"
+    for idx, n in ((1, 3), (2, 2)):
+        d = pages_root / str(idx)
+        d.mkdir(parents=True)
+        for i in range(1, n + 1):
+            (d / f"{i}.png").write_bytes(b"old")
+    (out_dir / "1.png").write_bytes(b"old-long-1")
+    (out_dir / "2.png").write_bytes(b"old-long-2")
+
+    # 本次只重发卡1，且只有 2 页
+    new_pages = tmp_path / "src_pages"
+    new_pages.mkdir()
+    (new_pages / "page_01.png").write_bytes(b"new-1")
+    (new_pages / "page_02.png").write_bytes(b"new-2")
+    new_long = tmp_path / "new_card.png"
+    new_long.write_bytes(b"new-long")
+    cards = [{"index": 1, "title": "新卡", "png_path": str(new_long),
+              "pages_dir": str(new_pages)}]
+
+    from loguru import logger
+
+    records = []
+    sink_id = logger.add(lambda msg: records.append(str(msg)), level="WARNING")
+    try:
+        result = svc.publish_case_cards(cards, publish_root=tmp_path, date_dir="2026-11-04")
+    finally:
+        logger.remove(sink_id)
+
+    # 卡1 分页被清空重写，旧第3页不残留
+    assert sorted(p.name for p in (pages_root / "1").glob("*.png")) == ["1.png", "2.png"]
+    assert (pages_root / "1" / "1.png").read_bytes() == b"new-1"
+    # 卡2 未在本次发布范围，保留历史产物
+    assert sorted(p.name for p in (pages_root / "2").glob("*.png")) == ["1.png", "2.png"]
+    assert result["cards"][0]["index"] == 1
+    # zip 含未覆盖卡2 + 残留告警已记录
+    import zipfile
+    with zipfile.ZipFile(out_dir / "小红书分页.zip") as zf:
+        assert any(n.startswith("小红书分页/2/") for n in zf.namelist())
+    assert records and "历史产物" in records[0]
