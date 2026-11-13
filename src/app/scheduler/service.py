@@ -310,6 +310,18 @@ class SchedulerService(
                         prompt_tokens = ai_result.prompt_tokens
                         completion_tokens = ai_result.completion_tokens
                         prompt_meta.update(ai_result.prompt_meta)
+                        # 日报标题-正文一致性校验（title_check.py）：串扰标题定向重写，
+                        # 校验/修复自身异常不影响主流程，只记录日志后按原结果继续。
+                        title_check_meta: Dict[str, Any] = {}
+                        if getattr(task, "task_type", "report") == "report":
+                            try:
+                                summary, title_check_meta = await self._fix_report_card_titles(
+                                    db=db, task=task, job=job, summary=summary,
+                                )
+                            except Exception:
+                                logger.exception("Job {} 日报标题一致性校验失败，按原结果继续", job.id)
+                        if title_check_meta:
+                            prompt_meta["title_consistency"] = title_check_meta
                         usage_stats = compute_prompt_usage(task.prompt, system_instruction_for_usage or "", chatlog_text)
                         execution.raw_request = json.dumps(prompt_meta, ensure_ascii=False)
                         # 卡片任务（topic_card/image_card）的生图与推送耗时很长，此时保持 running，

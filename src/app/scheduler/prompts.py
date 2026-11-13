@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 
@@ -21,10 +22,14 @@ from .errors import (
 from .parsing import (
     _parse_llm_chunk,
 )
+from .title_check import TitleCheckResult, check_report_titles, replace_card_title
 from .types import (
     AiSummaryResult,
     ModelSequenceItem,
 )
+
+# 单次运行最多定向重写的标题数，控制附加 LLM 成本
+_TITLE_FIX_MAX_CARDS = 2
 
 class PromptFlowMixin:
     """聊天记录→系统指令→模型序列重试→AI 摘要的生成流程。"""
@@ -181,6 +186,118 @@ class PromptFlowMixin:
                 raw_summary=last_error.raw_summary,
             ) from last_error
         raise RuntimeError(f"AI 请求全部失败：{last_error}") from last_error
+
+    async def _fix_report_card_titles(
+        self, *, db, task: Task, job: Job, summary: str
+    ) -> Tuple[str, Dict[str, Any]]:
+        """报告任务输出后校验话题标题与正文一致性（title_check.py）。
+
+        串扰标题用模型序列中的第一个模型定向重写（只改标题，不重生成正文）；
+        重写后复查仍不通过则保留原标题并发告警。返回 (summary, 校验元数据)。
+        """
+        if getattr(task, "task_type", "report") != "report" or not summary:
+            return summary, {}
+        results = check_report_titles(summary)
+        if not results:
+            return summary, {}
+        failed = [r for r in results if not r.passed]
+        meta: Dict[str, Any] = {
+            "checked": len(results),
+            "failed": len(failed),
+            "fixed": [],
+            "unresolved": [],
+        }
+        if not failed:
+            return summary, meta
+        model = None
+        try:
+            sequence = self._resolve_model_sequence(db, task)
+            model = sequence[0].model if sequence else None
+        except Exception:
+            logger.exception("Job {} 标题修复解析模型序列失败", job.id)
+        for result in failed[:_TITLE_FIX_MAX_CARDS]:
+            old_title = result.card.title
+            if model is None:
+                meta["unresolved"].append(self._title_check_brief(result, reason="no_model"))
+                continue
+            logger.warning(
+                "Job {} 话题{}标题疑似串扰（own={} other_max={} 疑似来自话题{}）：{}",
+                job.id, result.card.index, result.own_score, result.other_max_score,
+                result.other_card_index, old_title,
+            )
+            new_title = await self._rewrite_card_title(model, result)
+            fixed = False
+            if new_title and new_title != old_title:
+                updated = replace_card_title(summary, result.card.index, new_title)
+                if updated is not None:
+                    recheck = {
+                        r.card.index: r
+                        for r in check_report_titles(updated)
+                    }.get(result.card.index)
+                    if recheck is not None and recheck.passed:
+                        summary = updated
+                        fixed = True
+                        meta["fixed"].append({
+                            "card": result.card.index,
+                            "old_title": old_title,
+                            "new_title": new_title,
+                        })
+                        logger.info(
+                            "Job {} 话题{}标题已定向重写：「{}」→「{}」",
+                            job.id, result.card.index, old_title, new_title,
+                        )
+            if not fixed:
+                meta["unresolved"].append(
+                    self._title_check_brief(result, reason="rewrite_rejected", new_title=new_title)
+                )
+        if meta["unresolved"]:
+            details = "；".join(
+                f"话题{item['card']}标题《{item['title']}》疑似引用了话题{item['other_card']}的内容"
+                for item in meta["unresolved"]
+            )
+            await self._notify_alert_webhooks(
+                db, task, job,
+                f"日报标题一致性校验未通过（已尝试定向重写仍失败，保留原标题）：{details}",
+            )
+        return summary, meta
+
+    def _title_check_brief(
+        self, result: TitleCheckResult, *, reason: str, new_title: Optional[str] = None
+    ) -> Dict[str, Any]:
+        brief: Dict[str, Any] = {
+            "card": result.card.index,
+            "title": result.card.title,
+            "own": result.own_score,
+            "other_max": result.other_max_score,
+            "other_card": result.other_card_index,
+            "reason": reason,
+        }
+        if new_title:
+            brief["rejected_title"] = new_title
+        return brief
+
+    async def _rewrite_card_title(self, model, result: TitleCheckResult) -> Optional[str]:
+        """让模型仅依据本卡正文重写一个标题；返回纯文本标题，失败返回 None。"""
+        prompt = (
+            "你是一名职场内容标题校对员。下面是一张职场话题卡片的正文，以及当前标题。\n"
+            "当前标题引用了其他话题的内容，与本卡片正文不符，请只依据正文重写标题。\n\n"
+            f"【当前标题】{result.card.title}\n\n"
+            f"【卡片正文】\n{result.card.body_text[:4000]}\n\n"
+            "标题要求：\n"
+            "- 8-18个字，一句口语化的狠话，可用问句；禁止论文式标题（如「XX与XX：从A到B」）\n"
+            "- 只能取材于上面的正文，核心词必须能在正文找到出处，不得引入正文没有的概念\n"
+            "- 呈现「正常事物的不正常状态」，自带信息增量（新知/破误区/具体数字算法）\n"
+            "- 只输出新标题纯文本，不要解释、不要引号\n"
+        )
+        try:
+            text, _prompt_tokens, _completion_tokens = await self._invoke_llm(model, prompt)
+        except Exception:
+            logger.exception("标题定向重写 LLM 调用失败")
+            return None
+        cleaned = re.sub(r"\s+", "", text or "").strip("「」\"'“”‘’《》#*-")
+        if not cleaned or not re.search(r"[\u4e00-\u9fff]", cleaned):
+            return None
+        return cleaned[:30]
 
     def _validate_ai_output(self, *, task: Task, job: Job, summary: str, html_required: bool) -> None:
         if getattr(task, "task_type", "report") == "topic_card":
